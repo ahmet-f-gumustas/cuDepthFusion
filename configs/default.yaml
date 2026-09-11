@@ -1,0 +1,43 @@
+# Starting configuration from the development spec (section 6.3).
+# These are NOT tuned optima: select parameters on the validation split and freeze
+# them before evaluating on the test split. Values mirror the C++ defaults in
+# include/cudepthfusion/config.hpp; tests/python/test_config.py checks they agree.
+
+# P0: the CUDA backend is not implemented yet (phase P4), so the default is cpu.
+backend: cpu
+
+depth:
+  min_m: 0.2
+  max_m: 8.0
+
+spatial:
+  enabled: true
+  radius: 2
+  sigma_xy_px: 2.0
+  sigma_depth_m: 0.03
+
+noise:            # sigma(z) = a_m + b_per_m * z^2
+  a_m: 0.002
+  b_per_m: 0.001
+
+fusion:
+  tau_abs_m: 0.015
+  k_sigma: 3.0
+  history_decay: 0.95
+  max_history_ratio: 8.0
+  variance_floor_m2: 0.000001
+  variance_reference_m2: 0.0001
+  q0_m2: 0.000004
+  q_translation: 0.001
+  q_rotation_m2_per_rad2: 0.0001
+  fill_holes: false
+  max_history_age_frames: 2
+  assume_static_camera: false   # true: a missing pose means identity (explicit opt-in only)
+
+reset:
+  max_frame_gap_s: 0.2
+
+benchmark:
+  warmup_frames: 100
+  measured_frames: 500
+  repeats: 5

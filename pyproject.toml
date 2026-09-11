@@ -1,0 +1,51 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "cudepthfusion"
+dynamic = ["version"]
+description = "Pose-aware, edge-preserving temporal depth fusion with a C++ reference and a CUDA backend"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.23", "PyYAML>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "ruff>=0.5", "clang-format>=18"]
+
+[project.scripts]
+cudepthfusion = "cudepthfusion.cli:main"
+
+[tool.scikit-build]
+minimum-version = "0.10"
+cmake.version = ">=3.22"
+cmake.build-type = "Release"
+# No persistent build-dir: a cached CMake configuration could silently carry
+# CUDEPTHFUSION_ENABLE_CUDA from one install to the next. Every pip build starts clean.
+wheel.packages = ["python/cudepthfusion"]
+
+[tool.scikit-build.cmake.define]
+CUDEPTHFUSION_BUILD_PYTHON = "ON"
+CUDEPTHFUSION_BUILD_TESTS = "OFF"
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "CMakeLists.txt"
+regex = 'project\(cuDepthFusion VERSION (?P<value>[0-9.]+)'
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+addopts = "-ra --strict-markers"
+markers = ["gpu: needs a CUDA build and a CUDA device; reported as SKIPPED otherwise"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "N"]
+ignore = ["N803", "N806"]  # T_world_camera follows the frame naming used in the geometry
+
+[tool.ruff.lint.isort]
+known-first-party = ["cudepthfusion"]
