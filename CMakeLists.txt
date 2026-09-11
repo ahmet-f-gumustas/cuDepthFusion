@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(cuDepthFusion VERSION 0.1.0 LANGUAGES CXX)
+project(cuDepthFusion VERSION 0.0.1 LANGUAGES CXX)
 
 option(CUDEPTHFUSION_ENABLE_CUDA "Build CUDA support" OFF)
 option(CUDEPTHFUSION_BUILD_TESTS "Build the C++ test suite" ${PROJECT_IS_TOP_LEVEL})
