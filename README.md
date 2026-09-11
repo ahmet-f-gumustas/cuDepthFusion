@@ -7,10 +7,11 @@ occlusions or moving foregrounds. A C++ reference implementation defines
 correctness, a CUDA backend makes it fast, and Python drives datasets, evaluation
 and demos.
 
-> **Status: P0 (skeleton). Fusion is not implemented yet.** The engine validates
-> inputs, sanitises depth and returns the current measurement with its variance.
-> The spatial filter and temporal fusion arrive in P3 (CPU) and P4 (CUDA). See
-> [docs/PROGRESS.md](docs/PROGRESS.md). No performance or quality numbers have been
+> **Status: v0.0.1 pre-release (P0 skeleton). Fusion is not implemented yet.**
+> The engine validates inputs, sanitises depth and returns the current measurement
+> with its variance. The spatial filter and temporal fusion arrive in P3 (CPU) and
+> P4 (CUDA). See [docs/PROGRESS.md](docs/PROGRESS.md) and
+> [CHANGELOG.md](CHANGELOG.md). No performance or quality numbers have been
 > measured yet.
 
 ## Hardware targets
