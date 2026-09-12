@@ -78,6 +78,9 @@ __pycache__/
 dist/
 wheels/
 
-# Datasets and run outputs (never committed)
-data/
-runs/
+.coverage
+
+# Datasets and run outputs (never committed). Anchored to the repository root:
+# an unanchored "data/" would also hide the python/cudepthfusion/data package.
+/data/
+/runs/
