@@ -32,7 +32,8 @@ all three devices. Pass the value explicitly to build for one device only.
 | Python | 3.10.12 (project venv `.venv`) |
 | NumPy / PyYAML | 2.2.6 / 6.0.3 |
 | pybind11 / scikit-build-core | 3.1.0 / 1.0.3 |
-| pytest / ruff / clang-format | 9.1.1 / 0.16.7 / 23.1.1 |
+| pytest / pytest-cov / ruff / clang-format | 9.1.1 / 7.1.0 / 0.16.7 / 23.1.1 |
+| opencv-python-headless (`[data]` extra) | 5.0.0.93 |
 
 Versions are recorded here but not pinned yet. They get pinned once the first full
 release pipeline (P8) passes.

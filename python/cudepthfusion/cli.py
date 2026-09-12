@@ -57,6 +57,15 @@ def _build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--frames", type=int, default=5)
     smoke.add_argument("--seed", type=int, default=0)
     smoke.set_defaults(handler=_cmd_smoke)
+
+    validate = commands.add_parser(
+        "validate-data",
+        help="check frame pairing and data conventions of a downloaded sequence "
+        "(writes validation.json next to the manifest)",
+    )
+    validate.add_argument("--manifest", type=Path, required=True)
+    validate.add_argument("--source-frames", type=int, default=8)
+    validate.set_defaults(handler=_cmd_validate_data)
     return parser
 
 
@@ -130,6 +139,37 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
     }
     print(json.dumps(summary, indent=2))
     return EXIT_OK if not failures else EXIT_FAILED_CHECK
+
+
+def _cmd_validate_data(args: argparse.Namespace) -> int:
+    try:
+        from cudepthfusion.data.icl_nuim import DatasetError
+        from cudepthfusion.data.manifest import ManifestError
+        from cudepthfusion.data.poses import TrajectoryFormatError
+        from cudepthfusion.data.validation import validate_sequence
+    except ImportError as error:  # opencv is an optional dependency
+        print(f"error: {error}; install with pip install 'cudepthfusion[data]'", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+
+    def log(message: str) -> None:
+        print(message, file=sys.stderr, flush=True)
+
+    try:
+        report = validate_sequence(args.manifest, source_frames=args.source_frames, log=log)
+    except (DatasetError, ManifestError, TrajectoryFormatError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+    geometry = report["geometry"]
+    summary = {
+        "passed": report["passed"],
+        "reasons": report["reasons"],
+        "report": str(args.manifest.parent / "validation.json"),
+        "pairing": report["pairing"],
+        "noisy_clean_consistency": report["noisy_clean_consistency"],
+        "geometry": {key: geometry[key] for key in ("declared", "best", "runner_up")},
+    }
+    print(json.dumps(summary, indent=2))
+    return EXIT_OK if report["passed"] else EXIT_FAILED_CHECK
 
 
 def _smoke_invariant_failures(index: int, depth: np.ndarray, result: Any) -> list[str]:
