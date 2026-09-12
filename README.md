@@ -83,6 +83,20 @@ python -m cudepthfusion.cli check-config configs/default.yaml
 python -m cudepthfusion.cli smoke --backend cpu         # plumbing check, not a benchmark
 ```
 
+## Datasets
+
+Data is downloaded on demand into the git-ignored `data/` folder and must pass validation
+before the filter may read it:
+
+```bash
+python scripts/download_dataset.py --dataset icl-nuim --sequence kt0 \
+    --variants clean noisy poses --output data/icl
+python -m cudepthfusion.cli validate-data --manifest data/icl/kt0/manifest.json
+```
+
+Licenses and attribution are in [docs/DATASETS.md](docs/DATASETS.md). The evidence for
+each dataset's conventions is in [docs/DATA_VALIDATION.md](docs/DATA_VALIDATION.md).
+
 ## Tests
 
 ```bash
@@ -96,8 +110,8 @@ ctest --test-dir build/cpu -L cpu
 | Phase | Scope | Status |
 |---|---|---|
 | P0 | Build, API types, CPU-only mode, config validation | done |
-| P1 | ICL-NUIM downloader and adapter, manifest, geometry check | next |
-| P2 | Synthetic oracle scenes | planned |
+| P1 | ICL-NUIM downloader and adapter, manifest, geometry check | done (kt0 validated) |
+| P2 | Synthetic oracle scenes | next |
 | P3 | CPU bilateral filter, z-buffer reprojection, gating, fusion | planned |
 | P4 | CUDA kernels, CPU/GPU parity, compute-sanitizer | planned |
 | P5 | Baselines, metrics, ablation | planned |
