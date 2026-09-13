@@ -97,6 +97,15 @@ python -m cudepthfusion.cli validate-data --manifest data/icl/kt0/manifest.json
 Licenses and attribution are in [docs/DATASETS.md](docs/DATASETS.md). The evidence for
 each dataset's conventions is in [docs/DATA_VALIDATION.md](docs/DATA_VALIDATION.md).
 
+Analytic synthetic scenes with exact ground truth need no download:
+
+```bash
+python scripts/make_synthetic.py --suite all --output data/synthetic
+```
+
+The scenarios, conventions and the tests behind them are described in
+[docs/SYNTHETIC.md](docs/SYNTHETIC.md).
+
 ## Tests
 
 ```bash
@@ -111,8 +120,8 @@ ctest --test-dir build/cpu -L cpu
 |---|---|---|
 | P0 | Build, API types, CPU-only mode, config validation | done |
 | P1 | ICL-NUIM downloader and adapter, manifest, geometry check | done (kt0 validated) |
-| P2 | Synthetic oracle scenes | next |
-| P3 | CPU bilateral filter, z-buffer reprojection, gating, fusion | planned |
+| P2 | Synthetic oracle scenes | done |
+| P3 | CPU bilateral filter, z-buffer reprojection, gating, fusion | next |
 | P4 | CUDA kernels, CPU/GPU parity, compute-sanitizer | planned |
 | P5 | Baselines, metrics, ablation | planned |
 | P6 | Demo (PNG/MP4, side-by-side) | planned |
