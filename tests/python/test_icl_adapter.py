@@ -7,8 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from fake_icl import FY_ABS, build_fake_icl
-from synthetic_scene import camera_pose
+from fake_icl import FY_ABS, build_fake_icl, camera_pose
 
 from cudepthfusion.data.fetch import fetch_sequence
 from cudepthfusion.data.icl_nuim import (
