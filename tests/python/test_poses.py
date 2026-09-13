@@ -54,6 +54,25 @@ def test_malformed_lines_name_the_line(tmp_path: Path, line: str, message: str) 
         poses.parse_tum_trajectory(path)
 
 
+@pytest.mark.parametrize(
+    "quaternion",
+    [
+        (0, 0, 0, 1),
+        (0.1, 0.2, 0.3, 0.9),
+        (1, 0, 0, 0),
+        (0, 1, 0, 0),
+        (0, 0, 1, 0),
+        (0.5, -0.5, 0.5, -0.5),
+    ],
+    ids=["identity", "generic", "x180", "y180", "z180", "negative-w"],
+)
+def test_rotation_to_quaternion_round_trips(quaternion: tuple) -> None:
+    rotation = poses.quaternion_to_rotation(*quaternion)
+    recovered = poses.rotation_to_quaternion(rotation)
+    assert recovered[3] >= 0
+    np.testing.assert_allclose(poses.quaternion_to_rotation(*recovered), rotation, atol=1e-12)
+
+
 def test_invert_rigid_round_trips() -> None:
     transform = poses.pose_matrix((1.0, -2.0, 0.5), (0.1, 0.2, 0.3, 0.9))
     np.testing.assert_allclose(poses.invert_rigid(transform) @ transform, np.eye(4), atol=1e-12)

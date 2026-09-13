@@ -2,12 +2,23 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from synthetic_scene import camera_pose, render_z
 
 from cudepthfusion.data import geometry_check as geo
+from cudepthfusion.data.camera import PinholeCamera
 from cudepthfusion.data.poses import invert_rigid
+from cudepthfusion.synthetic import get_scenario, render
 
 W, H, FX, FY, CX, CY = 64, 48, 60.0, -60.0, 31.5, 23.5
+ROOM = get_scenario("room_handheld")
+CAMERA = PinholeCamera(W, H, FX, FY, CX, CY)
+
+
+def camera_pose(frame: int) -> np.ndarray:
+    return ROOM.trajectory(frame / 30.0)
+
+
+def render_z(pose: np.ndarray) -> np.ndarray:
+    return render(ROOM.scene, CAMERA, pose)[0]
 
 
 def test_ray_norms_are_one_at_the_principal_point_and_grow_outwards() -> None:
@@ -30,8 +41,8 @@ def test_interior_mask_drops_invalid_pixels_and_depth_jumps() -> None:
 
 def test_warp_with_true_relative_pose_is_exact_on_planes() -> None:
     pose_a, pose_b = camera_pose(3), camera_pose(9)
-    z_a = render_z(pose_a, W, H, FX, FY, CX, CY)
-    z_b = render_z(pose_b, W, H, FX, FY, CX, CY)
+    z_a = render_z(pose_a)
+    z_b = render_z(pose_b)
     predicted, observed = geo.warp_residual(z_a, z_b, invert_rigid(pose_b) @ pose_a, FX, FY, CX, CY)
     # Edge dilation and the 6-frame motion leave about half of this small image comparable.
     assert predicted.size > 0.3 * W * H
@@ -39,7 +50,7 @@ def test_warp_with_true_relative_pose_is_exact_on_planes() -> None:
 
 
 def test_warp_with_identity_pose_returns_the_same_depth() -> None:
-    z = render_z(camera_pose(0), W, H, FX, FY, CX, CY)
+    z = render_z(camera_pose(0))
     predicted, observed = geo.warp_residual(z, z, np.eye(4), FX, FY, CX, CY)
     np.testing.assert_allclose(predicted, observed, rtol=1e-12)
 

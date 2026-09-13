@@ -86,3 +86,27 @@ def invert_rigid(transform: np.ndarray) -> np.ndarray:
     inverse[:3, :3] = rotation.T
     inverse[:3, 3] = -rotation.T @ transform[:3, 3]
     return inverse
+
+
+def rotation_to_quaternion(rotation: np.ndarray) -> tuple[float, float, float, float]:
+    """(qx, qy, qz, qw) with qw >= 0 of a proper rotation matrix (Shepperd's method)."""
+    trace = float(np.trace(rotation))
+    if trace > 0:
+        s = math.sqrt(trace + 1.0) * 2
+        q = [
+            (rotation[2, 1] - rotation[1, 2]) / s,
+            (rotation[0, 2] - rotation[2, 0]) / s,
+            (rotation[1, 0] - rotation[0, 1]) / s,
+            0.25 * s,
+        ]
+    else:
+        i = int(np.argmax(np.diag(rotation)))
+        j, k = (i + 1) % 3, (i + 2) % 3
+        s = math.sqrt(1.0 + rotation[i, i] - rotation[j, j] - rotation[k, k]) * 2
+        q = [0.0, 0.0, 0.0, 0.0]
+        q[i] = 0.25 * s
+        q[j] = (rotation[j, i] + rotation[i, j]) / s
+        q[k] = (rotation[k, i] + rotation[i, k]) / s
+        q[3] = (rotation[k, j] - rotation[j, k]) / s
+    sign = -1.0 if q[3] < 0 else 1.0  # q and -q are the same rotation; keep qw >= 0
+    return sign * q[0], sign * q[1], sign * q[2], sign * q[3]

@@ -183,3 +183,62 @@ synthetic, offline ICL look-alike.
   ruff, which honours `.gitignore`, never linted it; a few long lines slipped through
   as a result. It is now `/data/` (and `/runs/`). This was caught before the first
   commit.
+
+## P2 — Synthetic oracle scenes (2026-09-13)
+
+**Gate:** "analytic Z and pose tests; fixed seed". **PASSED.** Details are in
+[SYNTHETIC.md](SYNTHETIC.md).
+
+### Delivered
+
+- `cudepthfusion.synthetic`:
+  - scenes are planar rectangles (unbounded planes, bounded patches, movers at constant
+    velocity), rendered by exact ray casting into float64 camera Z and surface ids;
+  - rigid trajectories: static, linear, spin, handheld;
+  - seeded noise σ(z) = a + b·z² with dropouts, reproducible per (seed, frame);
+  - `SyntheticSequence` renders lazily and keeps filter input (`frame.input`, an
+    `InputFrame`) separate from evaluator truth (`frame.truth`: exact Z, surface ids,
+    dynamic mask).
+- Nine scenarios covering the spec's cases: `plane_static`, `plane_lateral`,
+  `plane_dolly`, `slanted_plane`, `step`, `front_surface_pass`, `revealed_background`,
+  `room_handheld`, `room_spin`.
+- `scripts/make_synthetic.py` / `synthetic.export`:
+  - writes the TUM-PNG layout that the ICL adapter reads, plus `oracle.npz` (surface ids
+    and dynamic masks);
+  - the manifest's generator block records every parameter needed to regenerate the exact
+    truth;
+  - exports are deterministic, and a directory that is not a synthetic export is never
+    replaced.
+- Shared helpers: `data.camera.PinholeCamera`, `data.frames.InputFrame` (moved out of the
+  ICL adapter) and `data.poses.rotation_to_quaternion` (moved out of the test helpers). The
+  P1 tests now use the package generator instead of their own room renderer.
+
+### Verification run on RTX 4090 Laptop
+
+| Check | Command | Result |
+|---|---|---|
+| Python tests | `pytest --cov=cudepthfusion` | 174 passed, 96 % coverage (the `synthetic/` modules are between 96 % and 100 %) |
+| Commit 1 alone | the same, with the export files stashed | 166 passed, ruff clean |
+| C++ tests | `ctest --test-dir build/cpu` | 44 passed, 1 skipped (GPU, CPU-only build); no C++ changes in P2 |
+| Full export | `python scripts/make_synthetic.py --suite all --output data/synthetic` | 9 scenarios × 60 frames at 640×480 in 16.7 s, 264 MB, 0 unstorable pixels |
+| Moving-camera export | `validate-data` on `room_handheld` | PASSED: declared = best, mean median \|ΔZ\|/Z 1.40e-05, every rival loses 32/32 |
+| Static-camera export | `validate-data` on `plane_static` | fails as designed: every candidate ties at 0 residual, so nothing is identifiable |
+| Lint and format | `ruff check`, `ruff format --check` | clean |
+
+### Found and fixed along the way
+
+- The ground-truth warp test used `room_spin` frames 0 → 40. That is 38° of yaw, which
+  leaves only 19.5 % of the pixels comparable, below the test's 20 % coverage bound. The
+  pair is now 0 → 20 (19°). The exactness requirement (rtol 1e-9) is unchanged.
+
+### Open items and decisions to carry forward
+
+- **Static-camera exports:** `validate-data` cannot confirm their pose conventions. They
+  hold by construction, and the evidence is the generator tests. Load such exports
+  with `require_validated=False` explicitly.
+- **Noise model:** the synthetic noise has the same form the filter assumes. Synthetic
+  results therefore test the filter against its own model, and P5 must label them so.
+- **World-point tracking (spec 10.3):** exact Z, surface ids and poses are enough to
+  follow fixed world points. The stability metric itself belongs to P5.
+- **C++ tests in P3:** they need synthetic inputs, either from Python fixtures or from a
+  small C++ port of the ray caster. This is to be decided at the start of P3.

@@ -17,6 +17,7 @@ import numpy as np
 
 from cudepthfusion import _core
 from cudepthfusion.data.camera import ray_norms
+from cudepthfusion.data.frames import InputFrame
 from cudepthfusion.data.manifest import MANIFEST_NAME, VALIDATION_NAME, file_sha256, load_manifest
 from cudepthfusion.data.poses import PoseRecord, invert_rigid, parse_tum_trajectory
 from cudepthfusion.data.registry import Conventions
@@ -146,17 +147,6 @@ def depth_to_metres(raw: np.ndarray, conventions: Conventions) -> np.ndarray:
 
 def conventions_from_manifest(manifest: Mapping) -> Conventions:
     return Conventions(**manifest["conventions"])
-
-
-@dataclass(frozen=True, eq=False)
-class InputFrame:
-    """Everything the filter may see for one frame. There is deliberately no clean depth."""
-
-    frame_id: int
-    timestamp_s: float
-    depth_m: np.ndarray
-    intrinsics: _core.Intrinsics
-    T_world_camera: np.ndarray
 
 
 class IclInputSequence:

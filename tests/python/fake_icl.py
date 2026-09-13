@@ -7,7 +7,6 @@ ground-truth conventions that tests can then declare correctly or incorrectly.
 from __future__ import annotations
 
 import hashlib
-import math
 import shutil
 import tarfile
 from collections.abc import Callable, Sequence
@@ -16,10 +15,20 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from synthetic_scene import camera_pose, ray_distance, render_z
 
 from cudepthfusion.data import download as dl
+from cudepthfusion.data.camera import PinholeCamera
+from cudepthfusion.data.poses import rotation_to_quaternion
 from cudepthfusion.data.registry import Conventions, RemoteFile, SequenceSpec
+from cudepthfusion.synthetic import get_scenario, render
+
+ROOM = get_scenario("room_handheld")
+
+
+def camera_pose(image_id: int) -> np.ndarray:
+    """T_world_camera of the fake sequence's frame ``image_id`` (30 Hz handheld motion)."""
+    return ROOM.trajectory(image_id / 30.0)
+
 
 WIDTH, HEIGHT = 80, 60
 FX, FY_ABS, CX, CY = 70.0, 70.0, 39.5, 29.5
@@ -36,28 +45,6 @@ class FakeIcl:
     spec: SequenceSpec
     truth: Conventions
     downloader: Callable[..., dl.DownloadResult]
-
-
-def rotation_to_quaternion(rotation: np.ndarray) -> tuple[float, float, float, float]:
-    """(qx, qy, qz, qw) of a proper rotation matrix."""
-    trace = float(np.trace(rotation))
-    if trace > 0:
-        s = math.sqrt(trace + 1.0) * 2
-        return (
-            (rotation[2, 1] - rotation[1, 2]) / s,
-            (rotation[0, 2] - rotation[2, 0]) / s,
-            (rotation[1, 0] - rotation[0, 1]) / s,
-            0.25 * s,
-        )
-    i = int(np.argmax(np.diag(rotation)))
-    j, k = (i + 1) % 3, (i + 2) % 3
-    s = math.sqrt(1.0 + rotation[i, i] - rotation[j, j] - rotation[k, k]) * 2
-    q = [0.0, 0.0, 0.0, 0.0]
-    q[i] = 0.25 * s
-    q[j] = (rotation[j, i] + rotation[i, j]) / s
-    q[k] = (rotation[k, i] + rotation[i, k]) / s
-    q[3] = (rotation[k, j] - rotation[j, k]) / s
-    return q[0], q[1], q[2], q[3]
 
 
 def build_fake_icl(
@@ -95,8 +82,9 @@ def build_fake_icl(
     pose_lines = []
     for image_id in range(frames):
         pose = camera_pose(image_id)
-        z = render_z(pose, WIDTH, HEIGHT, FX, truth.fy, CX, CY)
-        stored = z if depth_kind == "z" else ray_distance(z, FX, truth.fy, CX, CY)
+        camera = PinholeCamera(WIDTH, HEIGHT, FX, truth.fy, CX, CY)
+        z = render(ROOM.scene, camera, pose)[0]
+        stored = z if depth_kind == "z" else z * camera.ray_norms()
         clean = np.round(stored * UNITS_PER_M).astype(np.uint16)
         noisy_m = stored + rng.normal(0.0, noise_m, stored.shape)
         noisy = np.clip(np.round(noisy_m * UNITS_PER_M), 0, 65535).astype(np.uint16)
