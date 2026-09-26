@@ -10,7 +10,13 @@ from cudepthfusion._core import (
     library_version,
 )
 from cudepthfusion.config import BenchmarkConfig, LoadedConfig, load_config
-from cudepthfusion.engine import DepthFusion, Diagnostics, FusionResult, InputStats
+from cudepthfusion.engine import (
+    DepthFusion,
+    Diagnostics,
+    FusionResult,
+    FusionStats,
+    InputStats,
+)
 
 __version__ = library_version()
 
@@ -21,6 +27,7 @@ __all__ = [
     "DepthFusion",
     "Diagnostics",
     "FusionResult",
+    "FusionStats",
     "InputStats",
     "Intrinsics",
     "InvalidInputError",

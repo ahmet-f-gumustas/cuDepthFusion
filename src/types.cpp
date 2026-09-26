@@ -56,8 +56,6 @@ const char* to_string(TemporalStatus status) {
       return "temporal_disabled_no_pose";
     case TemporalStatus::kDisabledInvalidPose:
       return "temporal_disabled_invalid_pose";
-    case TemporalStatus::kNotImplemented:
-      return "not_implemented";
   }
   return "unknown";
 }

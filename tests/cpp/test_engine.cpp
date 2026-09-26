@@ -78,8 +78,7 @@ TEST(Engine, FirstFrameReturnsSanitizedCurrentMeasurement) {
   EXPECT_EQ(result.diagnostics.temporal_status, TemporalStatus::kNoHistory);
   EXPECT_EQ(result.diagnostics.input.num_nonfinite, 1u);
   EXPECT_EQ(result.diagnostics.input.num_valid, frame.pixels.size() - 1);
-  EXPECT_FALSE(result.diagnostics.spatial_applied);
-  EXPECT_TRUE(has_note_containing(result.diagnostics, "spatial filter is not implemented"));
+  EXPECT_TRUE(result.diagnostics.spatial_applied);
 }
 
 TEST(Engine, VarianceFloorApplies) {
@@ -118,7 +117,7 @@ TEST(Engine, TemporalStatusReflectsPoseAvailability) {
   };
 
   EXPECT_EQ(status_for(make_frame(4, 3, 1.0f, 0.00)), TemporalStatus::kNoHistory);
-  EXPECT_EQ(status_for(make_frame(4, 3, 1.0f, 0.03)), TemporalStatus::kNotImplemented);
+  EXPECT_EQ(status_for(make_frame(4, 3, 1.0f, 0.03)), TemporalStatus::kFused);
   EXPECT_EQ(status_for(make_frame(4, 3, 1.0f, 0.06, std::nullopt)),
             TemporalStatus::kDisabledNoPose);
   // History from a pose-less frame cannot be reprojected.
@@ -144,7 +143,7 @@ TEST(Engine, StaticCameraModeTreatsMissingPoseAsIdentity) {
   DepthFusion engine(config, Backend::kCpu);
   engine.process(make_frame(4, 3, 1.0f, 0.00, std::nullopt).input);
   const FusionResult result = engine.process(make_frame(4, 3, 1.0f, 0.03, std::nullopt).input);
-  EXPECT_EQ(result.diagnostics.temporal_status, TemporalStatus::kNotImplemented);
+  EXPECT_EQ(result.diagnostics.temporal_status, TemporalStatus::kFused);
 }
 
 TEST(Engine, RejectedFrameLeavesStateUnchanged) {
@@ -209,12 +208,17 @@ TEST(Engine, MoveKeepsStateAndConfig) {
   EXPECT_EQ(assigned.process(make_frame(4, 3, 1.0f, 0.06).input).diagnostics.frame_index, 2u);
 }
 
-TEST(Engine, NoSpatialNoteWhenSpatialDisabled) {
-  Config config;
-  config.spatial.enabled = false;
-  DepthFusion engine(config, Backend::kCpu);
-  const FusionResult result = engine.process(make_frame(4, 3, 1.0f, 0.0).input);
-  EXPECT_FALSE(has_note_containing(result.diagnostics, "spatial"));
+TEST(Engine, SpatialFlagFollowsTheConfig) {
+  Config disabled;
+  disabled.spatial.enabled = false;
+  DepthFusion without(disabled, Backend::kCpu);
+  EXPECT_FALSE(without.process(make_frame(4, 3, 1.0f, 0.0).input).diagnostics.spatial_applied);
+
+  Config zero_radius;
+  zero_radius.spatial.radius = 0;
+  DepthFusion identity_filter(zero_radius, Backend::kCpu);
+  EXPECT_FALSE(
+      identity_filter.process(make_frame(4, 3, 1.0f, 0.0).input).diagnostics.spatial_applied);
 }
 
 TEST(BuildInfo, ReportsVersionAndCompiler) {

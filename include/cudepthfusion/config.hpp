@@ -33,6 +33,11 @@ struct FusionConfig {
   double q0_m2 = 4e-6;
   double q_translation = 1e-3;
   double q_rotation_m2_per_rad2 = 1e-4;
+  // Variance added per squared local depth gradient (m/px)^2. Nearest-pixel transport can
+  // land half a pixel off, which on a slope of g metres per pixel is a depth error of 0.5*g,
+  // so the default is (0.5 px)^2 = 0.25. It also makes the history give way near depth edges
+  // (spec 5.4). Set to 0 to disable.
+  double q_gradient = 0.25;
   bool fill_holes = false;
   int max_history_age_frames = 2;
   // Treat a missing pose as identity. Must be chosen explicitly; never inferred.
