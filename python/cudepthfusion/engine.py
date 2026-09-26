@@ -22,12 +22,31 @@ class InputStats:
 
 
 @dataclass(frozen=True)
+class FusionStats:
+    """What the temporal stage did with the transported history this frame."""
+
+    prior_candidates: int
+    prior_behind_camera: int
+    prior_off_screen: int
+    prior_visible: int
+    fused: int
+    current_only: int
+    rejected_current_nearer: int
+    rejected_current_farther: int
+    history_only: int
+    history_expired: int
+    invalid: int
+    mean_prior_weight: float
+
+
+@dataclass(frozen=True)
 class Diagnostics:
     frame_index: int
     reset_reason: str
     temporal_status: str
     spatial_applied: bool
     input: InputStats
+    fusion: FusionStats
     host_process_ms: float
     notes: tuple[str, ...]
 
@@ -118,6 +137,7 @@ def _to_result(raw: dict[str, Any]) -> FusionResult:
             temporal_status=diagnostics["temporal_status"],
             spatial_applied=diagnostics["spatial_applied"],
             input=InputStats(**diagnostics["input"]),
+            fusion=FusionStats(**diagnostics["fusion"]),
             host_process_ms=diagnostics["host_process_ms"],
             notes=tuple(diagnostics["notes"]),
         ),

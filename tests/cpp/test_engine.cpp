@@ -117,7 +117,7 @@ TEST(Engine, TemporalStatusReflectsPoseAvailability) {
   };
 
   EXPECT_EQ(status_for(make_frame(4, 3, 1.0f, 0.00)), TemporalStatus::kNoHistory);
-  EXPECT_EQ(status_for(make_frame(4, 3, 1.0f, 0.03)), TemporalStatus::kNotImplemented);
+  EXPECT_EQ(status_for(make_frame(4, 3, 1.0f, 0.03)), TemporalStatus::kFused);
   EXPECT_EQ(status_for(make_frame(4, 3, 1.0f, 0.06, std::nullopt)),
             TemporalStatus::kDisabledNoPose);
   // History from a pose-less frame cannot be reprojected.
@@ -143,7 +143,7 @@ TEST(Engine, StaticCameraModeTreatsMissingPoseAsIdentity) {
   DepthFusion engine(config, Backend::kCpu);
   engine.process(make_frame(4, 3, 1.0f, 0.00, std::nullopt).input);
   const FusionResult result = engine.process(make_frame(4, 3, 1.0f, 0.03, std::nullopt).input);
-  EXPECT_EQ(result.diagnostics.temporal_status, TemporalStatus::kNotImplemented);
+  EXPECT_EQ(result.diagnostics.temporal_status, TemporalStatus::kFused);
 }
 
 TEST(Engine, RejectedFrameLeavesStateUnchanged) {

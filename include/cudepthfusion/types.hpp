@@ -73,8 +73,6 @@ enum class TemporalStatus {
   kFused,
   kDisabledNoPose,
   kDisabledInvalidPose,
-  // Placeholder until the temporal stage lands (phase P3). Removed afterwards.
-  kNotImplemented,
 };
 
 const char* to_string(Backend backend);
@@ -90,12 +88,29 @@ struct InputStats {
   std::uint64_t num_above_max = 0;
 };
 
+// Per-frame outcome of the temporal stage (spec 5.3-5.7).
+struct FusionStats {
+  std::uint64_t prior_candidates = 0;     // valid history pixels that were projected
+  std::uint64_t prior_behind_camera = 0;  // z_c <= 0 after transport
+  std::uint64_t prior_off_screen = 0;
+  std::uint64_t prior_visible = 0;  // pixels that received a transported prior
+  std::uint64_t fused = 0;
+  std::uint64_t current_only = 0;
+  std::uint64_t rejected_current_nearer = 0;   // occlusion or a new front surface
+  std::uint64_t rejected_current_farther = 0;  // a surface disappeared or moved away
+  std::uint64_t history_only = 0;              // only with fusion.fill_holes
+  std::uint64_t history_expired = 0;           // history dropped at max_history_age_frames
+  std::uint64_t invalid = 0;
+  double mean_prior_weight = 0.0;  // mean P_prior / (P_cur + P_prior) over fused pixels
+};
+
 struct Diagnostics {
   std::uint64_t frame_index = 0;
   ResetReason reset_reason = ResetReason::kNone;
   TemporalStatus temporal_status = TemporalStatus::kNoHistory;
   bool spatial_applied = false;
   InputStats input;
+  FusionStats fusion;
   double host_process_ms = 0.0;  // wall clock inside DepthFusion::process()
   std::vector<std::string> notes;
 };

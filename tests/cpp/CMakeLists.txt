@@ -25,6 +25,7 @@ endfunction()
 cudepthfusion_add_test_suite(cudepthfusion_cpu_tests cpu
   test_config.cpp
   test_geometry.cpp
+  test_fuse.cpp
   test_measurement.cpp
   test_reproject.cpp
   test_spatial.cpp

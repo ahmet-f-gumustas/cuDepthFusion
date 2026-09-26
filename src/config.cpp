@@ -79,6 +79,7 @@ void validate_fusion(const FusionConfig& fusion) {
   require_non_negative("fusion.q0_m2", fusion.q0_m2);
   require_non_negative("fusion.q_translation", fusion.q_translation);
   require_non_negative("fusion.q_rotation_m2_per_rad2", fusion.q_rotation_m2_per_rad2);
+  require_non_negative("fusion.q_gradient", fusion.q_gradient);
   require_int_range("fusion.max_history_age_frames", fusion.max_history_age_frames, 0,
                     kMaxHistoryAgeFrames);
 }

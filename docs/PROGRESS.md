@@ -242,3 +242,86 @@ synthetic, offline ICL look-alike.
   follow fixed world points. The stability metric itself belongs to P5.
 - **C++ tests in P3:** they need synthetic inputs, either from Python fixtures or from a
   small C++ port of the ray caster. This is to be decided at the start of P3.
+
+## P3 — CPU fusion (2026-09-26)
+
+**Gate:** "unit tests and a first end-to-end CPU run". **PASSED.** The pipeline is
+described in [ALGORITHM.md](ALGORITHM.md).
+
+### Delivered
+
+- `cpu::bilateral_filter` (spec 5.2): valid-only neighbours, the centre always included,
+  out-of-image neighbours skipped instead of clamped, invalid centre stays invalid, and the
+  measurement variance left untouched.
+- `cpu::relative_pose`, `cpu::project_previous`, `cpu::depth_jacobian` (spec 4.2, 5.3, 5.4):
+  forward transport of the history with a 64-bit winner key `[z_c float bits | source index]`,
+  so the nearest surface wins and ties fall to the lowest source index — the rule a CUDA
+  `atomicMin` will reproduce. Depth, variance and age always come from the winning source.
+  Holes are measured and left empty; nothing is blended across them.
+- `cpu::gather_prior`, `cpu::fuse_frame` (spec 5.5–5.7): prior variance transport with the
+  process noise `Q`, the compatibility gate, the confidence-weighted merge with its caps,
+  and the optional history-only mode with its TTL.
+- Engine: history state (read-only during a frame, replaced afterwards), dropped on any
+  reset reason and whenever a frame has no usable pose. `TemporalStatus::kFused` replaces
+  the P0 placeholder.
+- Diagnostics: `FusionStats` (projected, behind camera, off screen, visible, fused,
+  current-only, rejected nearer/farther, history-only, expired, invalid, mean prior weight),
+  exposed through the binding and the Python `Diagnostics`.
+- New config field `fusion.q_gradient` (default 0.25), documented below.
+
+### Verification run on RTX 4090 Laptop
+
+| Check | Command | Result |
+|---|---|---|
+| C++ tests | `ctest --test-dir build/cpu` | 74 passed, 1 skipped (GPU); same under ASan/UBSan |
+| Python tests | `pytest` | 186 passed |
+| Lint, format, static analysis | `ruff`, `clang-format --dry-run --Werror`, `cppcheck` | clean |
+| Behaviour on synthetic scenes | `tests/python/test_fusion.py` | no bias on a noise-free plane; temporal noise at least halved on a static plane; a moving camera beats its raw input; no blending at a depth step; a new front surface replaces the history in the same frame; the background returns the frame after the occluder leaves; holes stay invalid unless `fill_holes` is on; losing the pose drops the history |
+| Real data, ICL-NUIM kt0, 120 frames | fused CPU engine vs the raw input against the clean depth, on `clean_valid ∧ raw_valid` | see below |
+
+Real-data medians over 110 frames after warm-up (a sanity run, **not** the P5 benchmark:
+no baselines, no split discipline, no repeats):
+
+| Metric | Raw | Fused |
+|---|---|---|
+| median \|error\| | 16.0 mm | 15.4 mm (−4 %) |
+| p90 \|error\| | 39.0 mm | 28.5 mm (−27 %) |
+| bad pixels (\|e\| > max(2 cm, 1 %)) | 15.4 % | 5.7 % |
+| RMSE | 195.4 mm | 194.9 mm (−0.2 %) |
+| edge-region MAE | 512.5 mm | 511.9 mm (+0.1 % worse) |
+
+Coverage of raw-valid pixels is 99.76 %; the missing part is the configured depth range,
+not the fusion. Per frame: ~292 000 pixels fused, ~7 600 gate rejections, mean prior weight
+0.57. CPU process latency at 640×480 is 56 ms median / 78 ms p95 — the single-threaded
+reference implementation, not a benchmark and not the target hardware path (CUDA is P4).
+
+### Found and fixed along the way
+
+- **Fusion made a slanted plane worse than its raw input** (RMSE 17.7 mm vs 15.5 mm).
+  Nearest-pixel transport can land half a pixel off, and that scene's slope reaches
+  0.12 m/px, so the mis-sampled prior was a systematic error larger than the noise. Fixed
+  with `fusion.q_gradient · g²` added to the prior variance, where `g` is the local depth
+  step and the default 0.25 is `(0.5 px)²` — derived from the rounding rule, not tuned.
+- **That term belongs in the merge, not in the gate.** Adding it to `τ` as well widened the
+  gate to metres at depth edges, and a new front surface was no longer rejected. The gate
+  now uses the transported variance alone; only the merge pays the sampling cost.
+- Two of the new tests were built wrong, not the code: one compared a prior 5 cm away from
+  the measurement (outside the gate, so the merge path never ran) and one moved a
+  single-pixel probe out of its own image. Both were fixed to test what they claimed.
+- A Python test failed against code that was already correct because the editable install
+  still held the previous `_core.so`. C++ sources must be rebuilt into the extension before
+  the Python suite runs.
+
+### Open items and decisions to carry forward
+
+- **RMSE on ICL is outlier-dominated.** The noise model displaces depth edges by several
+  pixels, which produces a small number of very large errors (edge MAE around 0.5 m). The
+  gate correctly refuses to fuse those, so RMSE barely moves while the bulk of the
+  distribution improves clearly. P5 must report edge and interior regions separately (the
+  protocol already requires it) and not read a single RMSE number as the whole story.
+- **Edges are preserved, not improved.** Edge MAE changes by 0.1 %, inside the spec's
+  "no more than 5 % worse" limit, but the fusion offers nothing there by design.
+- Diagnostics report rejection *counts*; there is no per-pixel rejection reason yet.
+- `fill_holes` stays off by default. Its quality cost is measured in P5, separately.
+- The edge-aware history rejection of spec 5.4 is implemented only through the gradient
+  term; a harder "reject near edges" rule is still open if P5 shows it is needed.

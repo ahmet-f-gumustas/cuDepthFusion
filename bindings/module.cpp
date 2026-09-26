@@ -115,12 +115,27 @@ py::dict diagnostics_to_dict(const cdf::Diagnostics& diagnostics) {
   input["num_below_min"] = diagnostics.input.num_below_min;
   input["num_above_max"] = diagnostics.input.num_above_max;
 
+  py::dict fusion;
+  fusion["prior_candidates"] = diagnostics.fusion.prior_candidates;
+  fusion["prior_behind_camera"] = diagnostics.fusion.prior_behind_camera;
+  fusion["prior_off_screen"] = diagnostics.fusion.prior_off_screen;
+  fusion["prior_visible"] = diagnostics.fusion.prior_visible;
+  fusion["fused"] = diagnostics.fusion.fused;
+  fusion["current_only"] = diagnostics.fusion.current_only;
+  fusion["rejected_current_nearer"] = diagnostics.fusion.rejected_current_nearer;
+  fusion["rejected_current_farther"] = diagnostics.fusion.rejected_current_farther;
+  fusion["history_only"] = diagnostics.fusion.history_only;
+  fusion["history_expired"] = diagnostics.fusion.history_expired;
+  fusion["invalid"] = diagnostics.fusion.invalid;
+  fusion["mean_prior_weight"] = diagnostics.fusion.mean_prior_weight;
+
   py::dict out;
   out["frame_index"] = diagnostics.frame_index;
   out["reset_reason"] = cdf::to_string(diagnostics.reset_reason);
   out["temporal_status"] = cdf::to_string(diagnostics.temporal_status);
   out["spatial_applied"] = diagnostics.spatial_applied;
   out["input"] = input;
+  out["fusion"] = fusion;
   out["host_process_ms"] = diagnostics.host_process_ms;
   out["notes"] = py::cast(diagnostics.notes);
   return out;
@@ -206,6 +221,7 @@ void bind_config(py::module_& m) {
       .def_readwrite("q0_m2", &cdf::FusionConfig::q0_m2)
       .def_readwrite("q_translation", &cdf::FusionConfig::q_translation)
       .def_readwrite("q_rotation_m2_per_rad2", &cdf::FusionConfig::q_rotation_m2_per_rad2)
+      .def_readwrite("q_gradient", &cdf::FusionConfig::q_gradient)
       .def_readwrite("fill_holes", &cdf::FusionConfig::fill_holes)
       .def_readwrite("max_history_age_frames", &cdf::FusionConfig::max_history_age_frames)
       .def_readwrite("assume_static_camera", &cdf::FusionConfig::assume_static_camera);

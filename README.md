@@ -7,12 +7,13 @@ occlusions or moving foregrounds. A C++ reference implementation defines
 correctness, a CUDA backend makes it fast, and Python drives datasets, evaluation
 and demos.
 
-> **Status: v0.0.1 pre-release (P0 skeleton). Fusion is not implemented yet.**
-> The engine validates inputs, sanitises depth and returns the current measurement
-> with its variance. The spatial filter and temporal fusion arrive in P3 (CPU) and
-> P4 (CUDA). See [docs/PROGRESS.md](docs/PROGRESS.md) and
-> [CHANGELOG.md](CHANGELOG.md). No performance or quality numbers have been
-> measured yet.
+> **Status: the CPU pipeline is complete (P3); the CUDA backend is next (P4).**
+> The engine filters, reprojects the previous result with the camera pose, picks the
+> nearest surface per pixel, gates it against the current measurement and merges what
+> survives. `backend="cuda"` still refuses to run. Parameters are the spec's starting
+> values, not tuned optima, and the full evaluation protocol (baselines, splits,
+> ablation) is P5. See [docs/ALGORITHM.md](docs/ALGORITHM.md) and
+> [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ## Hardware targets
 
@@ -121,8 +122,8 @@ ctest --test-dir build/cpu -L cpu
 | P0 | Build, API types, CPU-only mode, config validation | done |
 | P1 | ICL-NUIM downloader and adapter, manifest, geometry check | done (kt0 validated) |
 | P2 | Synthetic oracle scenes | done |
-| P3 | CPU bilateral filter, z-buffer reprojection, gating, fusion | next |
-| P4 | CUDA kernels, CPU/GPU parity, compute-sanitizer | planned |
+| P3 | CPU bilateral filter, z-buffer reprojection, gating, fusion | done |
+| P4 | CUDA kernels, CPU/GPU parity, compute-sanitizer | next |
 | P5 | Baselines, metrics, ablation | planned |
 | P6 | Demo (PNG/MP4, side-by-side) | planned |
 | P7 | Profiling and optimisation | planned |

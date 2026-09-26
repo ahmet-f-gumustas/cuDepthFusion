@@ -1,6 +1,5 @@
 #include "cudepthfusion/engine.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <mutex>
@@ -9,7 +8,9 @@
 #include <string>
 #include <vector>
 
+#include "cpu/fuse.hpp"
 #include "cpu/measurement.hpp"
+#include "cpu/reproject.hpp"
 #include "cpu/spatial.hpp"
 #include "cudepthfusion/error.hpp"
 #include "cudepthfusion/geometry.hpp"
@@ -26,7 +27,6 @@ struct FrameMeta {
   int height = 0;
   Intrinsics intrinsics;
   double timestamp_s = 0.0;
-  bool has_usable_pose = false;
 };
 
 void require_cuda_backend() {
@@ -87,9 +87,7 @@ ResetReason detect_reset(const std::optional<FrameMeta>& previous, bool explicit
 
 // A missing pose is identity only when the user explicitly chose the static-camera mode.
 TemporalStatus decide_temporal_status(const FrameInput& frame, const FusionConfig& fusion,
-                                      ResetReason reset_reason,
-                                      const std::optional<FrameMeta>& previous,
-                                      std::vector<std::string>& notes) {
+                                      bool history_available, std::vector<std::string>& notes) {
   if (!frame.T_world_camera && !fusion.assume_static_camera) {
     return TemporalStatus::kDisabledNoPose;
   }
@@ -100,34 +98,12 @@ TemporalStatus decide_temporal_status(const FrameInput& frame, const FusionConfi
       return TemporalStatus::kDisabledInvalidPose;
     }
   }
-  if (reset_reason != ResetReason::kNone || !previous->has_usable_pose) {
-    return TemporalStatus::kNoHistory;
-  }
-  notes.emplace_back(
-      "temporal fusion is not implemented yet (phase P3); output is the current measurement");
-  return TemporalStatus::kNotImplemented;
+  return history_available ? TemporalStatus::kFused : TemporalStatus::kNoHistory;
 }
 
-// Current-only output: variance floored as in the fusion rule, confidence derived from it.
-void fill_current_only(const Config& config, FusionResult& result) {
-  cpu::measurement_variance(result.depth_m, result.valid_mask, config.noise, result.variance_m2);
-  const auto floor = static_cast<float>(config.fusion.variance_floor_m2);
-  for (std::size_t i = 0; i < result.variance_m2.size(); ++i) {
-    if (result.valid_mask[i] != 0) {
-      result.variance_m2[i] = std::max(result.variance_m2[i], floor);
-    }
-  }
-  cpu::confidence_score(result.variance_m2, result.valid_mask, config.fusion.variance_reference_m2,
-                        result.confidence_score);
-
-  result.source_mask.assign(result.valid_mask.size(),
-                            static_cast<std::uint8_t>(SourceMask::kInvalid));
-  for (std::size_t i = 0; i < result.valid_mask.size(); ++i) {
-    if (result.valid_mask[i] != 0) {
-      result.source_mask[i] = static_cast<std::uint8_t>(SourceMask::kCurrent);
-    }
-  }
-  result.history_age.assign(result.valid_mask.size(), 0);
+bool pose_is_usable(TemporalStatus status) {
+  return status != TemporalStatus::kDisabledNoPose &&
+         status != TemporalStatus::kDisabledInvalidPose;
 }
 
 }  // namespace
@@ -139,6 +115,13 @@ struct DepthFusion::Impl {
   std::optional<FrameMeta> previous;
   bool explicit_reset_pending = false;
   std::uint64_t frames_processed = 0;
+
+  // Frame state: the history is read-only while a frame is processed and replaced at the end.
+  cpu::HistoryState history;
+  cpu::Measurement measurement;
+  cpu::PriorField prior;
+  std::vector<std::uint64_t> winner;
+  std::vector<float> scratch;
 };
 
 DepthFusion::DepthFusion(const Config& config, Backend backend) : impl_(std::make_unique<Impl>()) {
@@ -169,24 +152,55 @@ FusionResult DepthFusion::process(const FrameInput& frame) {
   diagnostics.frame_index = impl_->frames_processed;
   diagnostics.reset_reason = detect_reset(impl_->previous, impl_->explicit_reset_pending, frame,
                                           config.reset.max_frame_gap_s);
-  diagnostics.temporal_status = decide_temporal_status(
-      frame, config.fusion, diagnostics.reset_reason, impl_->previous, diagnostics.notes);
+  if (diagnostics.reset_reason != ResetReason::kNone) {
+    impl_->history.clear();
+  }
+  diagnostics.temporal_status =
+      decide_temporal_status(frame, config.fusion, !impl_->history.empty(), diagnostics.notes);
 
+  cpu::Measurement& measurement = impl_->measurement;
   diagnostics.input =
-      cpu::sanitize_depth(frame.depth_m, config.depth, result.depth_m, result.valid_mask);
+      cpu::sanitize_depth(frame.depth_m, config.depth, measurement.depth, measurement.valid);
   if (config.spatial.enabled && config.spatial.radius > 0) {
-    std::vector<float> filtered;
-    cpu::bilateral_filter(result.depth_m, result.valid_mask, result.width, result.height,
-                          config.spatial, filtered);
-    result.depth_m.swap(filtered);
+    cpu::bilateral_filter(measurement.depth, measurement.valid, result.width, result.height,
+                          config.spatial, impl_->scratch);
+    measurement.depth.swap(impl_->scratch);
     diagnostics.spatial_applied = true;
   }
-  fill_current_only(config, result);
+  cpu::measurement_variance(measurement.depth, measurement.valid, config.noise,
+                            measurement.variance);
 
-  const bool pose_usable = diagnostics.temporal_status != TemporalStatus::kDisabledNoPose &&
-                           diagnostics.temporal_status != TemporalStatus::kDisabledInvalidPose;
-  impl_->previous =
-      FrameMeta{result.width, result.height, frame.intrinsics, frame.timestamp_s, pose_usable};
+  const RigidTransform pose =
+      frame.T_world_camera ? *frame.T_world_camera : RigidTransform::identity();
+  impl_->prior.clear();
+  cpu::ProjectionStats projection;
+  if (diagnostics.temporal_status == TemporalStatus::kFused) {
+    const cpu::RelativePose relative = cpu::relative_pose(pose, impl_->history.pose);
+    projection = cpu::gather_prior(impl_->history, frame.intrinsics, relative, config.fusion,
+                                   impl_->winner, impl_->prior);
+  }
+
+  diagnostics.fusion = cpu::fuse_frame(config, measurement, impl_->prior, result);
+  diagnostics.fusion.prior_candidates = projection.candidates;
+  diagnostics.fusion.prior_behind_camera = projection.behind_camera;
+  diagnostics.fusion.prior_off_screen = projection.off_screen;
+  diagnostics.fusion.prior_visible = projection.visible;
+  cpu::confidence_score(result.variance_m2, result.valid_mask, config.fusion.variance_reference_m2,
+                        result.confidence_score);
+
+  if (pose_is_usable(diagnostics.temporal_status)) {
+    impl_->history.depth = result.depth_m;
+    impl_->history.variance = result.variance_m2;
+    impl_->history.valid = result.valid_mask;
+    impl_->history.age = result.history_age;
+    impl_->history.intrinsics = frame.intrinsics;
+    impl_->history.pose = pose;
+    impl_->history.width = result.width;
+    impl_->history.height = result.height;
+  } else {
+    impl_->history.clear();  // without a pose this frame can never be reprojected
+  }
+  impl_->previous = FrameMeta{result.width, result.height, frame.intrinsics, frame.timestamp_s};
   impl_->explicit_reset_pending = false;
   ++impl_->frames_processed;
 
@@ -198,6 +212,7 @@ FusionResult DepthFusion::process(const FrameInput& frame) {
 void DepthFusion::reset() {
   const std::lock_guard<std::mutex> lock(impl_->mutex);
   impl_->previous.reset();
+  impl_->history.clear();
   impl_->explicit_reset_pending = true;
 }
 
