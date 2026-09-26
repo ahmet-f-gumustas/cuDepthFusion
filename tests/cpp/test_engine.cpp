@@ -78,8 +78,7 @@ TEST(Engine, FirstFrameReturnsSanitizedCurrentMeasurement) {
   EXPECT_EQ(result.diagnostics.temporal_status, TemporalStatus::kNoHistory);
   EXPECT_EQ(result.diagnostics.input.num_nonfinite, 1u);
   EXPECT_EQ(result.diagnostics.input.num_valid, frame.pixels.size() - 1);
-  EXPECT_FALSE(result.diagnostics.spatial_applied);
-  EXPECT_TRUE(has_note_containing(result.diagnostics, "spatial filter is not implemented"));
+  EXPECT_TRUE(result.diagnostics.spatial_applied);
 }
 
 TEST(Engine, VarianceFloorApplies) {
@@ -209,12 +208,17 @@ TEST(Engine, MoveKeepsStateAndConfig) {
   EXPECT_EQ(assigned.process(make_frame(4, 3, 1.0f, 0.06).input).diagnostics.frame_index, 2u);
 }
 
-TEST(Engine, NoSpatialNoteWhenSpatialDisabled) {
-  Config config;
-  config.spatial.enabled = false;
-  DepthFusion engine(config, Backend::kCpu);
-  const FusionResult result = engine.process(make_frame(4, 3, 1.0f, 0.0).input);
-  EXPECT_FALSE(has_note_containing(result.diagnostics, "spatial"));
+TEST(Engine, SpatialFlagFollowsTheConfig) {
+  Config disabled;
+  disabled.spatial.enabled = false;
+  DepthFusion without(disabled, Backend::kCpu);
+  EXPECT_FALSE(without.process(make_frame(4, 3, 1.0f, 0.0).input).diagnostics.spatial_applied);
+
+  Config zero_radius;
+  zero_radius.spatial.radius = 0;
+  DepthFusion identity_filter(zero_radius, Backend::kCpu);
+  EXPECT_FALSE(
+      identity_filter.process(make_frame(4, 3, 1.0f, 0.0).input).diagnostics.spatial_applied);
 }
 
 TEST(BuildInfo, ReportsVersionAndCompiler) {

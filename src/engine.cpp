@@ -7,8 +7,10 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "cpu/measurement.hpp"
+#include "cpu/spatial.hpp"
 #include "cudepthfusion/error.hpp"
 #include "cudepthfusion/geometry.hpp"
 #ifdef CUDEPTHFUSION_WITH_CUDA
@@ -172,9 +174,12 @@ FusionResult DepthFusion::process(const FrameInput& frame) {
 
   diagnostics.input =
       cpu::sanitize_depth(frame.depth_m, config.depth, result.depth_m, result.valid_mask);
-  if (config.spatial.enabled) {
-    diagnostics.notes.emplace_back(
-        "spatial filter is not implemented yet (phase P3); output is unfiltered");
+  if (config.spatial.enabled && config.spatial.radius > 0) {
+    std::vector<float> filtered;
+    cpu::bilateral_filter(result.depth_m, result.valid_mask, result.width, result.height,
+                          config.spatial, filtered);
+    result.depth_m.swap(filtered);
+    diagnostics.spatial_applied = true;
   }
   fill_current_only(config, result);
 

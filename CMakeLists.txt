@@ -52,6 +52,8 @@ add_library(cudepthfusion STATIC
   src/geometry.cpp
   src/types.cpp
   src/cpu/measurement.cpp
+  src/cpu/reproject.cpp
+  src/cpu/spatial.cpp
 )
 add_library(cudepthfusion::cudepthfusion ALIAS cudepthfusion)
 target_include_directories(cudepthfusion
