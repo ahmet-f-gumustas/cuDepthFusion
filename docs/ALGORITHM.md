@@ -130,3 +130,37 @@ input pixel counts by category, and the fusion counters: how many prior pixels w
 projected, how many were behind the camera or off screen, how many survived the z-buffer,
 how many pixels were fused, kept current-only, rejected (nearer/farther), filled from
 history or expired, plus the mean prior weight.
+
+## The CUDA backend (P4)
+
+The GPU path runs the same stages in the same order, one thread per pixel, five kernels
+sequenced in a single stream: sanitize → bilateral → variance → project → gather → fuse.
+`DepthFusion::process()` stays synchronous: it uploads the frame, enqueues the kernels,
+copies the history forward on the device, downloads the six output arrays and the counters,
+and then synchronises once.
+
+- **The z-buffer is a 64-bit `atomicMin`** on the same key the CPU builds, so "nearest wins,
+  ties fall to the lowest source index" needs no lock and no second pass.
+- **Buffers only ever grow.** They are allocated on the first frame and on a resolution
+  change; the steady frame loop performs no allocation. Verified by watching free device
+  memory over 200 frames with resets and resize cycles: it does not move.
+- **Precision is split on purpose.** Input classification, the noise model, the gate and the
+  merge weights run in double on *both* backends, so a decision never depends on the backend.
+  The bilateral filter runs in float (spec 7.2). Every CUDA call is checked and reported as
+  `CudaError`.
+- Not used yet, on purpose: shared-memory tiles for the filter, CUDA Graphs, async APIs,
+  FP16, fast-math and approximate `exp`. Those belong to P7, after correctness.
+
+### What parity means in practice
+
+| Case | Result |
+|---|---|
+| Noise-free sequence with camera motion | `valid_mask`, `source_mask` and `history_age` identical; depth within 1e-5 m |
+| Noisy sequence, static camera (identity relative pose, so no z-buffer contention) | masks identical; depth within 1e-5 m |
+| Noisy sequence with camera motion | validity always identical; about 1 pixel in 10 000 diverges, worst case 9 mm |
+
+The last row is not a defect to be hidden. Two transported pixels can land on the same
+target with depths equal to within a float ULP, and a pixel's depth difference can sit
+exactly on τ. The two backends then pick different winners or different branches, and
+because the filter is recursive, the difference is carried in the history for a few frames.
+The tests bound how often that happens and how large it gets rather than averaging it away.

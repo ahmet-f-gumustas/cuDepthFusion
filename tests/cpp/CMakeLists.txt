@@ -33,7 +33,10 @@ cudepthfusion_add_test_suite(cudepthfusion_cpu_tests cpu
 )
 
 # Needs a CUDA build and a CUDA device; skips otherwise.
-cudepthfusion_add_test_suite(cudepthfusion_gpu_tests gpu
-  test_gpu_device.cpp
-  test_parity.cpp
-)
+set(cudepthfusion_gpu_test_sources test_gpu_device.cpp test_parity.cpp)
+if(CUDEPTHFUSION_ENABLE_CUDA)
+  # Needs the CUDA runtime headers, so it only exists in a CUDA build.
+  list(APPEND cudepthfusion_gpu_test_sources test_cuda_memory.cu)
+endif()
+
+cudepthfusion_add_test_suite(cudepthfusion_gpu_tests gpu ${cudepthfusion_gpu_test_sources})
