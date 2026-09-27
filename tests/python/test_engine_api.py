@@ -148,9 +148,13 @@ def test_process_arguments_are_keyword_only_and_pose_is_required(cpu_engine, int
 
 
 def test_cuda_backend_never_falls_back_to_cpu() -> None:
-    # Without CUDA support, or before the P4 kernels exist, the CUDA backend must refuse.
-    with pytest.raises(cdf.BackendUnavailableError):
-        cdf.DepthFusion(backend="cuda")
+    info = cdf.build_info()
+    if not info["cuda_compiled"] or not info["cuda_devices"]:
+        with pytest.raises(cdf.BackendUnavailableError):
+            cdf.DepthFusion(backend="cuda")
+        return
+    # With a device it runs on the GPU; it never quietly becomes the CPU backend.
+    assert cdf.DepthFusion(backend="cuda").backend == "cuda"
 
 
 def test_unknown_backend_is_rejected() -> None:

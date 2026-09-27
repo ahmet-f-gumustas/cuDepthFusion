@@ -35,4 +35,5 @@ cudepthfusion_add_test_suite(cudepthfusion_cpu_tests cpu
 # Needs a CUDA build and a CUDA device; skips otherwise.
 cudepthfusion_add_test_suite(cudepthfusion_gpu_tests gpu
   test_gpu_device.cpp
+  test_parity.cpp
 )

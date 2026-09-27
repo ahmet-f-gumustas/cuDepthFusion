@@ -28,4 +28,10 @@ class BackendUnavailableError : public Error {
   using Error::Error;
 };
 
+// A CUDA call failed. The message carries the CUDA error name and the call site.
+class CudaError : public Error {
+ public:
+  using Error::Error;
+};
+
 }  // namespace cudepthfusion

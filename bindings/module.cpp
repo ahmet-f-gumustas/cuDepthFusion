@@ -247,6 +247,7 @@ PYBIND11_MODULE(_core, m) {
   py::register_exception<cdf::InvalidInputError>(m, "InvalidInputError", PyExc_ValueError);
   py::register_exception<cdf::BackendUnavailableError>(m, "BackendUnavailableError",
                                                        PyExc_RuntimeError);
+  py::register_exception<cdf::CudaError>(m, "CudaError", PyExc_RuntimeError);
 
   bind_config(m);
 

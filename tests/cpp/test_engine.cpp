@@ -46,8 +46,13 @@ TEST(Engine, RejectsInvalidConfig) {
 }
 
 TEST(Engine, CudaBackendNeverFallsBackToCpu) {
-  // Without CUDA support, or before the P4 kernels exist, requesting CUDA must throw.
-  EXPECT_THROW(DepthFusion(Config{}, Backend::kCuda), BackendUnavailableError);
+  const BuildInfo info = build_info();
+  if (!info.cuda_compiled || info.cuda_devices.empty()) {
+    EXPECT_THROW(DepthFusion(Config{}, Backend::kCuda), BackendUnavailableError);
+    return;
+  }
+  DepthFusion engine(Config{}, Backend::kCuda);
+  EXPECT_EQ(engine.backend(), Backend::kCuda);  // it runs on the GPU or it throws, never on the CPU
 }
 
 TEST(Engine, FirstFrameReturnsSanitizedCurrentMeasurement) {
