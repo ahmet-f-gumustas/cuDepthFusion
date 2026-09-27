@@ -325,3 +325,76 @@ reference implementation, not a benchmark and not the target hardware path (CUDA
 - `fill_holes` stays off by default. Its quality cost is measured in P5, separately.
 - The edge-aware history rejection of spec 5.4 is implemented only through the gradient
   term; a harder "reject near edges" rule is still open if P5 shows it is needed.
+
+## P4 — CUDA backend (2026-09-28)
+
+**Gate:** "CPU/GPU parity plus a sanitizer report". **PASSED.** The GPU path is described at
+the end of [ALGORITHM.md](ALGORITHM.md).
+
+### Delivered
+
+- **Pipeline abstraction.** The engine keeps what is backend-independent (input validation,
+  reset detection, the temporal decision, diagnostics) and a `Pipeline` owns the arithmetic
+  and the history buffers of one backend. The P3 code moved into `CpuPipeline` unchanged.
+- **CUDA pipeline** (`src/cuda/pipeline.cu`): sanitize, bilateral, variance, project, gather
+  and fuse kernels, one thread per pixel, sequenced in one stream; `DepthFusion::process()`
+  stays synchronous.
+- **The z-buffer is a 64-bit `atomicMin`** on exactly the key the CPU reference builds, so
+  "nearest wins, ties to the lowest source index" needs no lock.
+- **RAII device buffers that only grow** plus an RAII stream; every CUDA call is checked and
+  reported as `CudaError` (new, exposed in Python too).
+- `backend="cuda"` now runs on the GPU when a device is present, and still raises
+  `BackendUnavailableError` otherwise. It never falls back to the CPU.
+- Precision is split on purpose: input classification, the noise model, the gate and the
+  merge weights run in double on both backends so a decision cannot depend on the backend;
+  the bilateral filter runs in float (spec 7.2).
+
+### Verification run on RTX 4090 Laptop
+
+| Check | Result |
+|---|---|
+| C++ tests, CUDA build | 79 passed (75 CPU + 4 GPU) |
+| C++ tests, CPU-only build | 75 passed, the 4 GPU tests skipped, never reported as passed |
+| Python tests | 192 passed (7 of them GPU-marked) |
+| `compute-sanitizer --tool memcheck` | 0 errors |
+| `compute-sanitizer --tool initcheck` | 0 errors |
+| `compute-sanitizer --tool synccheck` | 0 errors |
+| `compute-sanitizer --tool racecheck` | 0 hazards |
+| Device memory | free memory unchanged over 200 frames with resets, and unchanged again after repeated resize cycles: the steady loop allocates nothing |
+| Lint, format, static analysis | `ruff`, `clang-format --dry-run --Werror`, `cppcheck` clean |
+
+Parity, measured rather than asserted:
+
+| Case | Result |
+|---|---|
+| Noise-free sequence with camera motion (C++ and Python) | `valid_mask`, `source_mask` and `history_age` identical; depth within 1e-5 m |
+| Noisy sequence, static camera | masks identical; depth within 1e-5 m |
+| Noisy sequence with camera motion | validity always identical; about 1 pixel in 10 000 diverges (2 pixels per 19 013 in the worst frame), worst difference 9 mm |
+
+Informational latency at 640×480 on 60 real kt0 frames, including H2D/D2H and the
+synchronisation, medians after warm-up: **CPU 53.0 ms, CUDA 1.45 ms** (p95 2.56 ms). This is
+not the benchmark: no separation of GPU compute from copies, no repeats, no power-mode
+record, and the 4090 Laptop is not the 4070 Laptop the 16.7 ms target refers to. P5 and P7
+own that protocol.
+
+### Found and fixed along the way
+
+- The first parity test compared a noisy, moving-camera sequence with a strict tolerance and
+  failed on 2 pixels out of 19 013 (worst 9 mm). The cause was not a kernel bug: two
+  transported pixels landed on the same target with depths equal to within a float ULP, the
+  two backends picked different winners, and the recursive filter carried that difference in
+  the history for a few frames. The prior variance of those pixels differed, which is what
+  identified the winner flip. The tests now separate the cases: strict equality where the
+  decisions are unambiguous (no noise, or a static camera with no z-buffer contention) and a
+  measured, bounded fixture where a tie can go either way.
+
+### Open items and decisions to carry forward
+
+- The bilateral filter is the global-memory version. The shared-memory tile with a halo, CUDA
+  Graphs, async APIs and any merging of kernels belong to P7, after the numbers exist.
+- GPU compute time is not measured separately from the copies yet; the spec's three timings
+  (GPU compute, process latency, demo throughput) are P5/P7 work.
+- Diverging tie pixels are bounded but not eliminated. Making the projection FMA-free would
+  remove one source of it, at a cost that should be measured in P7 rather than guessed now.
+- Jetson Orin Nano Super is still unverified: the CUDA path needs an on-device build with
+  `CMAKE_CUDA_ARCHITECTURES=87`, plus the power mode recorded.

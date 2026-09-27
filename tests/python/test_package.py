@@ -43,9 +43,18 @@ def test_smoke_cli_passes_on_cpu(capsys: pytest.CaptureFixture[str]) -> None:
     assert [f["reset_reason"] for f in summary["frames"]] == ["first_frame", "none", "none"]
 
 
-def test_smoke_cli_reports_unavailable_cuda(capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["smoke", "--backend", "cuda", "--frames", "1"]) == cli.EXIT_USAGE_ERROR
-    assert "backend 'cuda'" in capsys.readouterr().err
+def test_smoke_cli_on_cuda(capsys: pytest.CaptureFixture[str]) -> None:
+    info = cdf.build_info()
+    code = cli.main(
+        ["smoke", "--backend", "cuda", "--frames", "2", "--width", "64", "--height", "48"]
+    )
+    captured = capsys.readouterr()
+    if not info["cuda_compiled"] or not info["cuda_devices"]:
+        assert code == cli.EXIT_USAGE_ERROR
+        assert "backend 'cuda'" in captured.err
+        return
+    assert code == cli.EXIT_OK, captured.err
+    assert json.loads(captured.out)["passed"] is True
 
 
 @pytest.mark.gpu

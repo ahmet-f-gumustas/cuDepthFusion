@@ -8,15 +8,9 @@
 #include <string>
 #include <vector>
 
-#include "cpu/fuse.hpp"
-#include "cpu/measurement.hpp"
-#include "cpu/reproject.hpp"
-#include "cpu/spatial.hpp"
 #include "cudepthfusion/error.hpp"
 #include "cudepthfusion/geometry.hpp"
-#ifdef CUDEPTHFUSION_WITH_CUDA
-#include "cuda/device_info.hpp"
-#endif
+#include "pipeline.hpp"
 
 namespace cudepthfusion {
 namespace {
@@ -29,19 +23,16 @@ struct FrameMeta {
   double timestamp_s = 0.0;
 };
 
-void require_cuda_backend() {
-#ifndef CUDEPTHFUSION_WITH_CUDA
+std::unique_ptr<detail::Pipeline> make_pipeline(Backend backend) {
+  if (backend == Backend::kCpu) {
+    return detail::make_cpu_pipeline();
+  }
+#ifdef CUDEPTHFUSION_WITH_CUDA
+  return detail::make_cuda_pipeline();
+#else
   throw BackendUnavailableError(
       "backend 'cuda' requested, but this build has no CUDA support; rebuild with "
       "-DCUDEPTHFUSION_ENABLE_CUDA=ON or use backend 'cpu'");
-#else
-  const cuda::DeviceQuery query = cuda::query_devices();
-  if (query.devices.empty()) {
-    throw BackendUnavailableError(
-        "backend 'cuda' requested, but no usable CUDA device was found: " + query.error);
-  }
-  throw BackendUnavailableError(
-      "backend 'cuda' is not implemented yet (planned for phase P4); use backend 'cpu'");
 #endif
 }
 
@@ -115,20 +106,12 @@ struct DepthFusion::Impl {
   std::optional<FrameMeta> previous;
   bool explicit_reset_pending = false;
   std::uint64_t frames_processed = 0;
-
-  // Frame state: the history is read-only while a frame is processed and replaced at the end.
-  cpu::HistoryState history;
-  cpu::Measurement measurement;
-  cpu::PriorField prior;
-  std::vector<std::uint64_t> winner;
-  std::vector<float> scratch;
+  std::unique_ptr<detail::Pipeline> pipeline;
 };
 
 DepthFusion::DepthFusion(const Config& config, Backend backend) : impl_(std::make_unique<Impl>()) {
   validate_config(config);
-  if (backend == Backend::kCuda) {
-    require_cuda_backend();
-  }
+  impl_->pipeline = make_pipeline(backend);  // throws when the backend cannot run
   impl_->config = config;
   impl_->backend = backend;
 }
@@ -153,53 +136,22 @@ FusionResult DepthFusion::process(const FrameInput& frame) {
   diagnostics.reset_reason = detect_reset(impl_->previous, impl_->explicit_reset_pending, frame,
                                           config.reset.max_frame_gap_s);
   if (diagnostics.reset_reason != ResetReason::kNone) {
-    impl_->history.clear();
+    impl_->pipeline->reset();
   }
-  diagnostics.temporal_status =
-      decide_temporal_status(frame, config.fusion, !impl_->history.empty(), diagnostics.notes);
+  diagnostics.temporal_status = decide_temporal_status(
+      frame, config.fusion, impl_->pipeline->has_history(), diagnostics.notes);
 
-  cpu::Measurement& measurement = impl_->measurement;
-  diagnostics.input =
-      cpu::sanitize_depth(frame.depth_m, config.depth, measurement.depth, measurement.valid);
-  if (config.spatial.enabled && config.spatial.radius > 0) {
-    cpu::bilateral_filter(measurement.depth, measurement.valid, result.width, result.height,
-                          config.spatial, impl_->scratch);
-    measurement.depth.swap(impl_->scratch);
-    diagnostics.spatial_applied = true;
-  }
-  cpu::measurement_variance(measurement.depth, measurement.valid, config.noise,
-                            measurement.variance);
+  detail::FrameRequest request;
+  request.frame = &frame;
+  request.pose = frame.T_world_camera ? *frame.T_world_camera : RigidTransform::identity();
+  request.use_history = diagnostics.temporal_status == TemporalStatus::kFused;
+  request.keep_history = pose_is_usable(diagnostics.temporal_status);
 
-  const RigidTransform pose =
-      frame.T_world_camera ? *frame.T_world_camera : RigidTransform::identity();
-  impl_->prior.clear();
-  cpu::ProjectionStats projection;
-  if (diagnostics.temporal_status == TemporalStatus::kFused) {
-    const cpu::RelativePose relative = cpu::relative_pose(pose, impl_->history.pose);
-    projection = cpu::gather_prior(impl_->history, frame.intrinsics, relative, config.fusion,
-                                   impl_->winner, impl_->prior);
-  }
+  const detail::FrameOutcome outcome = impl_->pipeline->process(config, request, result);
+  diagnostics.input = outcome.input;
+  diagnostics.fusion = outcome.fusion;
+  diagnostics.spatial_applied = outcome.spatial_applied;
 
-  diagnostics.fusion = cpu::fuse_frame(config, measurement, impl_->prior, result);
-  diagnostics.fusion.prior_candidates = projection.candidates;
-  diagnostics.fusion.prior_behind_camera = projection.behind_camera;
-  diagnostics.fusion.prior_off_screen = projection.off_screen;
-  diagnostics.fusion.prior_visible = projection.visible;
-  cpu::confidence_score(result.variance_m2, result.valid_mask, config.fusion.variance_reference_m2,
-                        result.confidence_score);
-
-  if (pose_is_usable(diagnostics.temporal_status)) {
-    impl_->history.depth = result.depth_m;
-    impl_->history.variance = result.variance_m2;
-    impl_->history.valid = result.valid_mask;
-    impl_->history.age = result.history_age;
-    impl_->history.intrinsics = frame.intrinsics;
-    impl_->history.pose = pose;
-    impl_->history.width = result.width;
-    impl_->history.height = result.height;
-  } else {
-    impl_->history.clear();  // without a pose this frame can never be reprojected
-  }
   impl_->previous = FrameMeta{result.width, result.height, frame.intrinsics, frame.timestamp_s};
   impl_->explicit_reset_pending = false;
   ++impl_->frames_processed;
@@ -212,7 +164,7 @@ FusionResult DepthFusion::process(const FrameInput& frame) {
 void DepthFusion::reset() {
   const std::lock_guard<std::mutex> lock(impl_->mutex);
   impl_->previous.reset();
-  impl_->history.clear();
+  impl_->pipeline->reset();
   impl_->explicit_reset_pending = true;
 }
 

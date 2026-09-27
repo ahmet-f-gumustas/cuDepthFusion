@@ -52,6 +52,7 @@ add_library(cudepthfusion STATIC
   src/geometry.cpp
   src/types.cpp
   src/cpu/fuse.cpp
+  src/cpu/pipeline.cpp
   src/cpu/measurement.cpp
   src/cpu/reproject.cpp
   src/cpu/spatial.cpp
@@ -71,7 +72,7 @@ target_compile_definitions(cudepthfusion PRIVATE
 cudepthfusion_set_warnings(cudepthfusion)
 
 if(CUDEPTHFUSION_ENABLE_CUDA)
-  target_sources(cudepthfusion PRIVATE src/cuda/device_info.cu)
+  target_sources(cudepthfusion PRIVATE src/cuda/device_info.cu src/cuda/pipeline.cu)
   # A ";" inside a compile definition would split it into two definitions.
   string(REPLACE ";" "," cudepthfusion_cuda_archs "${CMAKE_CUDA_ARCHITECTURES}")
   target_compile_definitions(cudepthfusion PRIVATE

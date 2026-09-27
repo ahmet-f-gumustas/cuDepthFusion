@@ -3,6 +3,7 @@
 from cudepthfusion._core import (
     BackendUnavailableError,
     ConfigError,
+    CudaError,
     Intrinsics,
     InvalidInputError,
     build_info,
@@ -24,6 +25,7 @@ __all__ = [
     "BackendUnavailableError",
     "BenchmarkConfig",
     "ConfigError",
+    "CudaError",
     "DepthFusion",
     "Diagnostics",
     "FusionResult",

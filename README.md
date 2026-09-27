@@ -7,13 +7,13 @@ occlusions or moving foregrounds. A C++ reference implementation defines
 correctness, a CUDA backend makes it fast, and Python drives datasets, evaluation
 and demos.
 
-> **Status: the CPU pipeline is complete (P3); the CUDA backend is next (P4).**
+> **Status: both backends work (P4). Evaluation is next (P5).**
 > The engine filters, reprojects the previous result with the camera pose, picks the
 > nearest surface per pixel, gates it against the current measurement and merges what
-> survives. `backend="cuda"` still refuses to run. Parameters are the spec's starting
-> values, not tuned optima, and the full evaluation protocol (baselines, splits,
-> ablation) is P5. See [docs/ALGORITHM.md](docs/ALGORITHM.md) and
-> [docs/PROGRESS.md](docs/PROGRESS.md).
+> survives — on the CPU and on the GPU, with the masks agreeing wherever the decisions are
+> unambiguous. Parameters are the spec's starting values, not tuned optima, and the full
+> evaluation protocol (baselines, splits, ablation) is P5. See
+> [docs/ALGORITHM.md](docs/ALGORITHM.md) and [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ## Hardware targets
 
@@ -74,7 +74,8 @@ result.source_mask, result.history_age, result.diagnostics
   non-contiguous array or cast a float64 one for you.
 - A missing pose disables the temporal stage. It is never replaced by identity
   unless you set `fusion.assume_static_camera: true`.
-- `backend="cuda"` never falls back to the CPU.
+- `backend="cuda"` runs on the GPU when a device is present and raises otherwise; it never
+  falls back to the CPU.
 
 CLI:
 
@@ -123,8 +124,8 @@ ctest --test-dir build/cpu -L cpu
 | P1 | ICL-NUIM downloader and adapter, manifest, geometry check | done (kt0 validated) |
 | P2 | Synthetic oracle scenes | done |
 | P3 | CPU bilateral filter, z-buffer reprojection, gating, fusion | done |
-| P4 | CUDA kernels, CPU/GPU parity, compute-sanitizer | next |
-| P5 | Baselines, metrics, ablation | planned |
+| P4 | CUDA kernels, CPU/GPU parity, compute-sanitizer | done |
+| P5 | Baselines, metrics, ablation | next |
 | P6 | Demo (PNG/MP4, side-by-side) | planned |
 | P7 | Profiling and optimisation | planned |
 | P8 | Release preparation | planned |
