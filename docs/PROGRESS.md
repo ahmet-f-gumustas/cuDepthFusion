@@ -473,3 +473,64 @@ it is a decision to take deliberately before P7, not a patch to slip in.
   Laptop and the Jetson) is still P7 work; the P4 latency numbers remain informational.
 - B2's low RMSE with the worst robust metrics is a useful reminder for the demo in P6: show
   the error distribution, not a single scalar.
+
+## P6 — Demo
+
+Goal: show the difference the method makes, with panels that can be compared by eye and
+timings that are not quietly mixed together.
+
+### What exists now
+
+- `python/cudepthfusion/viz/render.py` — panels, fixed scales, colorbars, the source legend
+  and a "no data" panel that prints its reason.
+- `python/cudepthfusion/viz/demo.py` — the run loop, the three separate timings and the run
+  artifacts (`summary.json`, `per_frame.csv`, `latency.csv`, `config_resolved.yaml`,
+  `environment.json`).
+- `examples/compare_depth.py` — the CLI from spec 11, with `--save-video`, `--save-frames`,
+  `--interactive`, `--depth-range`, `--error-max-mm` and `--sixth-panel`.
+- [docs/DEMO.md](DEMO.md) and the frame in `docs/images/demo_kt0.png`.
+
+### The gate: the same colour range everywhere
+
+Every depth panel of a run shares one metre range and one colormap, every error panel one
+millimetre range, fixed before the first frame and written into `summary.json`. A per-frame
+stretch would make a worse result look better, which is the one thing a comparison demo must
+not do. The range comes from frames spread over the run: taken from the first frame alone it
+saturated every later frame once the camera had moved, and the panels stopped showing
+anything. Invalid pixels are black everywhere; a panel with no data prints why instead of
+showing zeros that read as a perfect result.
+
+`--sixth-panel error_b1` puts `|B1 - GT|` next to `|B4 - GT|` on the same scale. That is the
+view where the P5 numbers become visible: the fusion panel is darker and less speckled on
+flat surfaces, while both keep the same bright edges.
+
+### Timings, kept apart (kt0, 200 frames, CUDA, RTX 4090 Laptop)
+
+| Time | Median | p95 |
+|---|---|---|
+| process latency B4 | 1.29 ms | 1.34 ms |
+| process latency B1 | 0.98 ms | 1.14 ms |
+| render (CPU colormapping and composing) | 18.23 ms | 21.01 ms |
+| write (PNG and MP4) | 13.35 ms | 15.13 ms |
+| demo throughput (decode + process + render + write) | 38.09 ms | 41.94 ms |
+| GPU compute (CUDA events) | not measured | — |
+
+Rendering and writing cost more than 24× the fusion itself, which is exactly why the spec
+asks for these three numbers separately. GPU compute is reported as `null` with the reason,
+never as a zero; the P7 benchmark owns it.
+
+### Found and fixed along the way
+
+- `auto_depth_range` widened a degenerate range before rounding it, so a constant-depth
+  sequence collapsed back to zero width and every pixel saturated. Rounding now happens
+  first. A test covers the constant-depth case.
+
+### Open items and decisions to carry forward
+
+- The renderer is plain NumPy and OpenCV on the CPU, and it dominates the demo's wall clock.
+  If a live demo is ever wanted, that is the part to move, not the fusion.
+- `--interactive` needs a GUI OpenCV build; the headless wheel in `.[dev]` cannot open a
+  window, and the demo says so rather than failing obscurely. It is exercised by a test that
+  simulates the headless failure, not by a real window.
+- The video codec is `mp4v` through OpenCV. If a build has no video support the demo says so
+  and suggests `--save-frames`; the test skips in that case rather than reporting a pass.

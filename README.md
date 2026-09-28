@@ -7,7 +7,7 @@ occlusions or moving foregrounds. A C++ reference implementation defines
 correctness, a CUDA backend makes it fast, and Python drives datasets, evaluation
 and demos.
 
-> **Status: evaluated on held-out sequences (P5). The demo is next (P6).**
+> **Status: evaluated on held-out sequences, with a comparison demo (P6). Profiling is next (P7).**
 > On the ICL-NUIM test split the full method cuts the p90 error by 35 % and the bad-pixel
 > rate by 60 % against the raw input, and a fixed world point is 5× steadier over time,
 > without losing a single valid measurement. **RMSE barely moves, so the spec's two RMSE
@@ -103,6 +103,21 @@ A run folder holds `summary.json`, `per_frame.csv`, `config_resolved.yaml`,
 `environment.json` and the figures, tagged with the git commit and the dataset hashes.
 Results and what they do and do not show: [docs/RESULTS.md](docs/RESULTS.md).
 
+## Demo
+
+```bash
+python examples/compare_depth.py --manifest data/icl/kt0/manifest.json \
+    --config configs/icl.yaml --backend cuda --frames 200 \
+    --sixth-panel error_b1 --output runs/demo/kt0 --save-video runs/demo/kt0/demo.mp4
+```
+
+![Six-panel comparison on ICL-NUIM kt0](docs/images/demo_kt0.png)
+
+All depth panels share one metre range and colormap and all error panels one millimetre
+range, fixed for the whole run and recorded in `summary.json`. Process latency, demo
+throughput and GPU compute are reported separately, and a time that was not measured is
+`null` with its reason rather than a zero. Details: [docs/DEMO.md](docs/DEMO.md).
+
 ## Datasets
 
 Data is downloaded on demand into the git-ignored `data/` folder and must pass validation
@@ -144,8 +159,8 @@ ctest --test-dir build/cpu -L cpu
 | P3 | CPU bilateral filter, z-buffer reprojection, gating, fusion | done |
 | P4 | CUDA kernels, CPU/GPU parity, compute-sanitizer | done |
 | P5 | Baselines, metrics, ablation | done ([results](docs/RESULTS.md)) |
-| P6 | Demo (PNG/MP4, side-by-side) | next |
-| P7 | Profiling and optimisation | planned |
+| P6 | Demo (PNG/MP4, side-by-side) | done ([demo](docs/DEMO.md)) |
+| P7 | Profiling and optimisation | next |
 | P8 | Release preparation | planned |
 
 ## License
