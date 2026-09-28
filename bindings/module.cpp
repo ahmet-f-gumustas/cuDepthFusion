@@ -137,6 +137,22 @@ py::dict diagnostics_to_dict(const cdf::Diagnostics& diagnostics) {
   out["input"] = input;
   out["fusion"] = fusion;
   out["host_process_ms"] = diagnostics.host_process_ms;
+  if (diagnostics.device.measured) {
+    const cdf::DeviceTimings& device = diagnostics.device;
+    py::dict timings;
+    timings["upload_ms"] = device.upload_ms;
+    timings["compute_ms"] = device.compute_ms;
+    timings["download_ms"] = device.download_ms;
+    timings["sanitize_ms"] = device.sanitize_ms;
+    timings["bilateral_ms"] = device.bilateral_ms;
+    timings["variance_ms"] = device.variance_ms;
+    timings["reproject_ms"] = device.reproject_ms;
+    timings["fuse_ms"] = device.fuse_ms;
+    timings["history_ms"] = device.history_ms;
+    out["device_timings"] = timings;
+  } else {
+    out["device_timings"] = py::none();  // not measured, which is not the same as zero
+  }
   out["notes"] = py::cast(diagnostics.notes);
   return out;
 }

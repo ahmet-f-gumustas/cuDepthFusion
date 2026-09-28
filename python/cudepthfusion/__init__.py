@@ -13,6 +13,7 @@ from cudepthfusion._core import (
 from cudepthfusion.config import BenchmarkConfig, LoadedConfig, load_config
 from cudepthfusion.engine import (
     DepthFusion,
+    DeviceTimings,
     Diagnostics,
     FusionResult,
     FusionStats,
@@ -27,6 +28,7 @@ __all__ = [
     "ConfigError",
     "CudaError",
     "DepthFusion",
+    "DeviceTimings",
     "Diagnostics",
     "FusionResult",
     "FusionStats",

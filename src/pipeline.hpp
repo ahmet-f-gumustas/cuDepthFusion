@@ -18,6 +18,7 @@ struct FrameRequest {
 struct FrameOutcome {
   InputStats input;
   FusionStats fusion;
+  DeviceTimings device;
   bool spatial_applied = false;
 };
 

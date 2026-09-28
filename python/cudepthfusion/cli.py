@@ -113,6 +113,21 @@ def _build_parser() -> argparse.ArgumentParser:
     ablate.add_argument("--stability", action="store_true")
     ablate.add_argument("--plots", action="store_true")
     ablate.set_defaults(handler=_cmd_ablate)
+
+    benchmark = commands.add_parser(
+        "benchmark",
+        help="time the engine on real consecutive frames with warm-up and repeats (spec 10.5)",
+    )
+    benchmark.add_argument("--manifest", type=Path, default=Path("data/icl/kt0/manifest.json"))
+    benchmark.add_argument("--config", type=Path, default=None)
+    benchmark.add_argument("--output", type=Path, required=True)
+    benchmark.add_argument("--backend", choices=BACKENDS, default=None)
+    benchmark.add_argument("--warmup-frames", type=int, default=None)
+    benchmark.add_argument("--measured-frames", type=int, default=None)
+    benchmark.add_argument("--repeats", type=int, default=None)
+    benchmark.add_argument("--first-frame", type=int, default=0)
+    benchmark.add_argument("--label", default=None, help="free text stored in summary.json")
+    benchmark.set_defaults(handler=_cmd_benchmark)
     return parser
 
 
@@ -349,6 +364,70 @@ def _cmd_ablate(args: argparse.Namespace) -> int:
         **_summarise(results, names),
     }
     return _finish_run(args, summary, results, config)
+
+
+def _cmd_benchmark(args: argparse.Namespace) -> int:
+    from cudepthfusion.data.icl_nuim import DatasetError
+    from cudepthfusion.data.manifest import ManifestError
+    from cudepthfusion.eval.artifacts import LATENCY_NAME, write_table
+    from cudepthfusion.eval.benchmark import (
+        BenchmarkError,
+        BenchmarkPlan,
+        describe_source,
+        load_frames,
+        run_benchmark,
+    )
+
+    def log(message: str) -> None:
+        print(message, file=sys.stderr, flush=True)
+
+    config = load_config(args.config)
+    backend = args.backend or config.backend
+    defaults = config.benchmark
+    plan = BenchmarkPlan(
+        warmup_frames=args.warmup_frames
+        if args.warmup_frames is not None
+        else defaults.warmup_frames,
+        measured_frames=args.measured_frames
+        if args.measured_frames is not None
+        else defaults.measured_frames,
+        repeats=args.repeats if args.repeats is not None else defaults.repeats,
+        first_frame=args.first_frame,
+    )
+    try:
+        log(f"decoding {plan.frames_needed} frames of {args.manifest} before timing")
+        frames = load_frames(args.manifest, plan)
+        summary, rows = run_benchmark(frames, config, plan, backend=backend, log=log)
+    except (DatasetError, ManifestError, BenchmarkError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+
+    summary = {
+        "created_at": utc_now(),
+        "command": shlex.join(["python", "-m", "cudepthfusion.cli", *sys.argv[1:]]),
+        "git_commit": git_commit(),
+        "label": args.label,
+        "config_file": str(args.config) if args.config else None,
+        "source": describe_source(args.manifest),
+        **summary,
+    }
+    write_run(args.output, summary, [], config)
+    write_table(args.output / LATENCY_NAME, rows)
+    latency = summary["process_latency"]
+    compute = summary["gpu_compute"]
+    print(
+        json.dumps(
+            {
+                "backend": backend,
+                "process_latency_ms": {k: latency[k] for k in ("median_ms", "p95_ms", "p99_ms")},
+                "gpu_compute_ms": compute.get("median_ms"),
+                "gpu_shared_with_other_processes": summary["gpu_shared_with_other_processes"],
+                "run": str(args.output),
+            },
+            indent=2,
+        )
+    )
+    return EXIT_OK
 
 
 def _cmd_evaluate(args: argparse.Namespace) -> int:

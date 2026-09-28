@@ -151,6 +151,7 @@ FusionResult DepthFusion::process(const FrameInput& frame) {
   diagnostics.input = outcome.input;
   diagnostics.fusion = outcome.fusion;
   diagnostics.spatial_applied = outcome.spatial_applied;
+  diagnostics.device = outcome.device;
 
   impl_->previous = FrameMeta{result.width, result.height, frame.intrinsics, frame.timestamp_s};
   impl_->explicit_reset_pending = false;

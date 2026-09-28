@@ -25,6 +25,7 @@ namespace cudepthfusion::detail {
 namespace {
 
 using cudepthfusion::cuda::DeviceBuffer;
+using cudepthfusion::cuda::Event;
 using cudepthfusion::cuda::Stream;
 
 constexpr int kBlockX = 16;
@@ -457,10 +458,14 @@ class CudaPipeline final : public Pipeline {
     DeviceConfig device_config = make_device_config(config);
     FrameOutcome outcome;
 
-    counters_.fill_bytes(0, 1, stream);
+    start_.record(stream);
     input_.upload(frame.depth_m.data, count, stream);
+    uploaded_.record(stream);
+    counters_.fill_bytes(0, 1, stream);
     sanitize_kernel<<<grid, block, 0, stream>>>(input_.data(), width, height, device_config,
                                                 depth_.data(), valid_.data(), counters_.data());
+
+    sanitized_.record(stream);
 
     const float* measurement = depth_.data();
     if (config.spatial.enabled && config.spatial.radius > 0) {
@@ -469,10 +474,12 @@ class CudaPipeline final : public Pipeline {
       measurement = filtered_.data();
       outcome.spatial_applied = true;
     }
+    filtered_event_.record(stream);
     const int linear_threads = 256;
     const int linear_blocks = static_cast<int>((count + linear_threads - 1) / linear_threads);
     variance_kernel<<<linear_blocks, linear_threads, 0, stream>>>(
         measurement, valid_.data(), static_cast<int>(count), device_config, variance_.data());
+    variance_event_.record(stream);
 
     if (request.use_history) {
       const cpu::RelativePose relative = cpu::relative_pose(request.pose, history_pose_);
@@ -506,6 +513,7 @@ class CudaPipeline final : public Pipeline {
     } else {
       prior_present_.fill_bytes(0, count, stream);
     }
+    reprojected_.record(stream);
 
     fuse_kernel<<<grid, block, 0, stream>>>(
         measurement, valid_.data(), variance_.data(), prior_depth_.data(), prior_variance_.data(),
@@ -513,6 +521,7 @@ class CudaPipeline final : public Pipeline {
         out_valid_.data(), out_variance_.data(), out_confidence_.data(), out_source_.data(),
         out_age_.data(), counters_.data());
     CUDEPTHFUSION_CUDA_CHECK(cudaGetLastError());
+    fused_.record(stream);
 
     if (request.keep_history) {
       history_depth_.copy_from(out_depth_, count, stream);
@@ -525,6 +534,7 @@ class CudaPipeline final : public Pipeline {
     } else {
       has_history_ = false;
     }
+    history_event_.record(stream);
 
     result.depth_m.resize(count);
     result.valid_mask.resize(count);
@@ -540,7 +550,19 @@ class CudaPipeline final : public Pipeline {
     out_age_.download(result.history_age.data(), count, stream);
     DeviceCounters host{};
     counters_.download(&host, 1, stream);
+    downloaded_.record(stream);
     stream_.synchronize();
+
+    outcome.device.measured = true;
+    outcome.device.upload_ms = uploaded_.since(start_);
+    outcome.device.compute_ms = history_event_.since(uploaded_);
+    outcome.device.download_ms = downloaded_.since(history_event_);
+    outcome.device.sanitize_ms = sanitized_.since(uploaded_);
+    outcome.device.bilateral_ms = filtered_event_.since(sanitized_);
+    outcome.device.variance_ms = variance_event_.since(filtered_event_);
+    outcome.device.reproject_ms = reprojected_.since(variance_event_);
+    outcome.device.fuse_ms = fused_.since(reprojected_);
+    outcome.device.history_ms = history_event_.since(fused_);
 
     outcome.input.num_pixels = count;
     outcome.input.num_valid = host.input_valid;
@@ -598,6 +620,8 @@ class CudaPipeline final : public Pipeline {
   }
 
   Stream stream_;
+  Event start_, uploaded_, sanitized_, filtered_event_, variance_event_, reprojected_, fused_,
+      history_event_, downloaded_;
   DeviceBuffer<float> input_, depth_, filtered_, variance_;
   DeviceBuffer<std::uint8_t> valid_;
   DeviceBuffer<unsigned long long> winner_;

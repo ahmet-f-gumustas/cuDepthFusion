@@ -52,6 +52,40 @@ class Stream {
   cudaStream_t stream_ = nullptr;
 };
 
+// Owns one timing event. Created once with the pipeline, recorded every frame.
+class Event {
+ public:
+  Event() { CUDEPTHFUSION_CUDA_CHECK(cudaEventCreate(&event_)); }
+  ~Event() {
+    if (event_ != nullptr) {
+      cudaEventDestroy(event_);
+    }
+  }
+  Event(const Event&) = delete;
+  Event& operator=(const Event&) = delete;
+  Event(Event&& other) noexcept : event_(std::exchange(other.event_, nullptr)) {}
+  Event& operator=(Event&& other) noexcept {
+    if (this != &other) {
+      if (event_ != nullptr) {
+        cudaEventDestroy(event_);
+      }
+      event_ = std::exchange(other.event_, nullptr);
+    }
+    return *this;
+  }
+
+  void record(cudaStream_t stream) { CUDEPTHFUSION_CUDA_CHECK(cudaEventRecord(event_, stream)); }
+  // Milliseconds from `start` to this event; both must have completed.
+  double since(const Event& start) const {
+    float elapsed = 0.0f;
+    CUDEPTHFUSION_CUDA_CHECK(cudaEventElapsedTime(&elapsed, start.event_, event_));
+    return static_cast<double>(elapsed);
+  }
+
+ private:
+  cudaEvent_t event_ = nullptr;
+};
+
 // Device memory that only ever grows, so a steady frame loop allocates nothing (spec 7.6).
 template <typename T>
 class DeviceBuffer {
