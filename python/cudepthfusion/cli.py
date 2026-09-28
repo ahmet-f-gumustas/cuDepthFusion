@@ -21,6 +21,7 @@ from cudepthfusion.eval.baselines import (
     BASELINE_NAMES,
     DEFAULT_EMA_PRIOR_WEIGHT,
     DEFAULT_FIXED_PRIOR_WEIGHT,
+    EngineBaseline,
 )
 from cudepthfusion.eval.metrics import (
     BAD_PIXEL_ABS_M,
@@ -95,8 +96,38 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--baselines", nargs="+", default=list(BASELINE_NAMES))
     evaluate.add_argument("--fixed-prior-weight", type=float, default=DEFAULT_FIXED_PRIOR_WEIGHT)
     evaluate.add_argument("--ema-prior-weight", type=float, default=DEFAULT_EMA_PRIOR_WEIGHT)
+    evaluate.add_argument("--stability", action="store_true", help="also track fixed world points")
+    evaluate.add_argument("--plots", action="store_true", help="write figures into the run folder")
     evaluate.set_defaults(handler=_cmd_evaluate)
+
+    ablate = commands.add_parser(
+        "ablate", help="remove one part of the method at a time and measure the cost (spec 10.7)"
+    )
+    ablate.add_argument("--manifest", type=Path, action="append")
+    ablate.add_argument("--split", choices=("development", "validation", "test"))
+    ablate.add_argument("--data-root", type=Path, default=Path("data/icl"))
+    ablate.add_argument("--config", type=Path, default=None)
+    ablate.add_argument("--output", type=Path, required=True)
+    ablate.add_argument("--backend", choices=BACKENDS, default="cpu")
+    ablate.add_argument("--frames", type=int, default=None)
+    ablate.add_argument("--stability", action="store_true")
+    ablate.add_argument("--plots", action="store_true")
+    ablate.set_defaults(handler=_cmd_ablate)
     return parser
+
+
+# Each variant removes exactly one part of the method (spec 10.7). The flag says whether the
+# pose reaches the engine: dropping it is how "no pose compensation" is expressed, together
+# with assume_static_camera so the temporal stage still runs, on an identity transport.
+ABLATIONS: dict[str, tuple[dict, bool]] = {
+    "full": ({}, True),
+    "no_spatial_filter": ({"spatial": {"enabled": False}}, True),
+    "no_pose_compensation": ({"fusion": {"assume_static_camera": True}}, False),
+    "no_depth_gate": ({"fusion": {"tau_abs_m": 1000.0}}, True),
+    "no_adaptive_weighting": ({"fusion": {"fixed_prior_weight": 0.5}}, True),
+    "no_variance_caps": ({"fusion": {"history_decay": 1.0, "max_history_ratio": 1.0e9}}, True),
+    "no_gradient_term": ({"fusion": {"q_gradient": 0.0}}, True),
+}
 
 
 def _cmd_info(_: argparse.Namespace) -> int:
@@ -205,6 +236,121 @@ def _resolve_manifests(args: argparse.Namespace) -> list[Path]:
     return manifests
 
 
+def _summarise(results: list, names: tuple[str, ...]) -> dict[str, Any]:
+    sequences = []
+    for result in results:
+        sequences.append(
+            {
+                "sequence": result.sequence,
+                "split": result.split,
+                "manifest": result.manifest_path,
+                "manifest_sha256": result.manifest_sha256,
+                "frames_evaluated": result.frames_evaluated,
+                "per_baseline": {
+                    name: aggregate([m for m in result.metrics if m.baseline == name])
+                    for name in names
+                },
+                "stability": [entry.as_dict() for entry in result.stability],
+            }
+        )
+    pooled = {
+        name: aggregate([m for result in results for m in result.metrics if m.baseline == name])
+        for name in names
+    }
+    # A long sequence must not drown the others, so report the equal-weight average too.
+    sequence_mean = {
+        name: {
+            key: float(
+                sum(entry["per_baseline"][name][key] for entry in sequences) / len(sequences)
+            )
+            for key in ("rmse_m", "mae_m", "bad_pixel_rate", "coverage", "edge_mae_m")
+        }
+        for name in names
+    }
+    return {"sequences": sequences, "overall": {"pooled": pooled, "sequence_mean": sequence_mean}}
+
+
+def _finish_run(args: argparse.Namespace, summary: dict[str, Any], results: list, config) -> int:
+    rows = [metric.row() for result in results for metric in result.metrics]
+    write_run(args.output, summary, rows, config)
+    if getattr(args, "plots", False):
+        from cudepthfusion.eval.plots import write_plots
+
+        for path in write_plots(args.output, summary, rows):
+            print(f"wrote {path}", file=sys.stderr)
+    print(
+        json.dumps(
+            {"output": str(args.output), "overall": summary["overall"]},
+            indent=2,
+            default=lambda value: None,
+        )
+    )
+    return EXIT_OK
+
+
+def _cmd_ablate(args: argparse.Namespace) -> int:
+    from cudepthfusion.data.icl_nuim import DatasetError
+    from cudepthfusion.data.manifest import ManifestError
+
+    def log(message: str) -> None:
+        print(message, file=sys.stderr, flush=True)
+
+    try:
+        manifests = _resolve_manifests(args)
+        config = load_config(args.config)
+        results = []
+        for manifest in manifests:
+            log(f"ablating on {manifest}")
+            methods = []
+            for name, (overrides, use_pose) in ABLATIONS.items():
+                data = config.to_dict()
+                for section, values in overrides.items():
+                    data[section].update(values)
+                methods.append(
+                    EngineBaseline(
+                        name,
+                        f"ablation: {name}",
+                        load_config(data),
+                        args.backend,
+                        use_pose=use_pose,
+                    )
+                )
+            results.append(
+                evaluate_sequence(
+                    manifest,
+                    config,
+                    backend=args.backend,
+                    frames=args.frames,
+                    log=log,
+                    methods=methods,
+                    track_stability=args.stability,
+                )
+            )
+    except (DatasetError, ManifestError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+
+    names = tuple(ABLATIONS)
+    summary = {
+        "created_at": utc_now(),
+        "command": shlex.join(["python", "-m", "cudepthfusion.cli", *sys.argv[1:]]),
+        "git_commit": git_commit(),
+        "backend": args.backend,
+        "split": args.split,
+        "frames_limit": args.frames,
+        "kind": "ablation",
+        "variants": {name: str(overrides) for name, (overrides, _) in ABLATIONS.items()},
+        "thresholds": {
+            "bad_pixel_abs_m": BAD_PIXEL_ABS_M,
+            "bad_pixel_rel": BAD_PIXEL_REL,
+            "edge_jump_m": EDGE_JUMP_M,
+            "edge_dilate_px": EDGE_DILATE_PX,
+        },
+        **_summarise(results, names),
+    }
+    return _finish_run(args, summary, results, config)
+
+
 def _cmd_evaluate(args: argparse.Namespace) -> int:
     from cudepthfusion.data.icl_nuim import DatasetError
     from cudepthfusion.data.manifest import ManifestError
@@ -228,6 +374,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
                     log=log,
                     fixed_prior_weight=args.fixed_prior_weight,
                     ema_prior_weight=args.ema_prior_weight,
+                    track_stability=args.stability,
                 )
             )
     except (DatasetError, ManifestError, ValueError) as error:
@@ -235,35 +382,6 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         return EXIT_USAGE_ERROR
 
     names = tuple(args.baselines)
-    sequences = []
-    for result in results:
-        sequences.append(
-            {
-                "sequence": result.sequence,
-                "split": result.split,
-                "manifest": result.manifest_path,
-                "manifest_sha256": result.manifest_sha256,
-                "frames_evaluated": result.frames_evaluated,
-                "per_baseline": {
-                    name: aggregate([m for m in result.metrics if m.baseline == name])
-                    for name in names
-                },
-            }
-        )
-    pooled = {
-        name: aggregate([m for result in results for m in result.metrics if m.baseline == name])
-        for name in names
-    }
-    # A long sequence must not drown the others, so report the equal-weight average too.
-    sequence_mean = {
-        name: {
-            key: float(
-                sum(entry["per_baseline"][name][key] for entry in sequences) / len(sequences)
-            )
-            for key in ("rmse_m", "mae_m", "bad_pixel_rate", "coverage", "edge_mae_m")
-        }
-        for name in names
-    }
     summary = {
         "created_at": utc_now(),
         "command": shlex.join(["python", "-m", "cudepthfusion.cli", *sys.argv[1:]]),
@@ -271,6 +389,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         "backend": args.backend,
         "split": args.split,
         "frames_limit": args.frames,
+        "kind": "evaluation",
         "config_file": str(args.config) if args.config else None,
         "baselines": results[0].baselines if results else {},
         "thresholds": {
@@ -281,19 +400,9 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             "fixed_prior_weight": args.fixed_prior_weight,
             "ema_prior_weight": args.ema_prior_weight,
         },
-        "sequences": sequences,
-        "overall": {"pooled": pooled, "sequence_mean": sequence_mean},
+        **_summarise(results, names),
     }
-    rows = [metric.row() for result in results for metric in result.metrics]
-    write_run(args.output, summary, rows, config)
-    print(
-        json.dumps(
-            {"output": str(args.output), "overall": summary["overall"]},
-            indent=2,
-            default=lambda v: None,
-        )
-    )
-    return EXIT_OK
+    return _finish_run(args, summary, results, config)
 
 
 def _smoke_invariant_failures(index: int, depth: np.ndarray, result: Any) -> list[str]:

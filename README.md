@@ -7,13 +7,15 @@ occlusions or moving foregrounds. A C++ reference implementation defines
 correctness, a CUDA backend makes it fast, and Python drives datasets, evaluation
 and demos.
 
-> **Status: both backends work (P4). Evaluation is next (P5).**
-> The engine filters, reprojects the previous result with the camera pose, picks the
-> nearest surface per pixel, gates it against the current measurement and merges what
-> survives — on the CPU and on the GPU, with the masks agreeing wherever the decisions are
-> unambiguous. Parameters are the spec's starting values, not tuned optima, and the full
-> evaluation protocol (baselines, splits, ablation) is P5. See
-> [docs/ALGORITHM.md](docs/ALGORITHM.md) and [docs/PROGRESS.md](docs/PROGRESS.md).
+> **Status: evaluated on held-out sequences (P5). The demo is next (P6).**
+> On the ICL-NUIM test split the full method cuts the p90 error by 35 % and the bad-pixel
+> rate by 60 % against the raw input, and a fixed world point is 5× steadier over time,
+> without losing a single valid measurement. **RMSE barely moves, so the spec's two RMSE
+> targets are not met**: a 2.7 % population of gross input outliers owns 99.4 % of the
+> squared error, and the gate passes them through by design. The measurements, the ablation
+> and that analysis are in [docs/RESULTS.md](docs/RESULTS.md); the algorithm is in
+> [docs/ALGORITHM.md](docs/ALGORITHM.md) and the history in
+> [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ## Hardware targets
 
@@ -85,6 +87,22 @@ python -m cudepthfusion.cli check-config configs/default.yaml
 python -m cudepthfusion.cli smoke --backend cpu         # plumbing check, not a benchmark
 ```
 
+## Evaluation
+
+Every method is scored on the same fixed mask (clean-valid AND raw-input-valid), so nothing
+improves by dropping pixels, and the clean depth is read only by the evaluator:
+
+```bash
+python -m cudepthfusion.cli evaluate --split test --data-root data/icl \
+    --config configs/icl.yaml --output runs/test --backend cuda --stability --plots
+python -m cudepthfusion.cli ablate --split validation --data-root data/icl \
+    --config configs/icl.yaml --output runs/ablation --backend cuda
+```
+
+A run folder holds `summary.json`, `per_frame.csv`, `config_resolved.yaml`,
+`environment.json` and the figures, tagged with the git commit and the dataset hashes.
+Results and what they do and do not show: [docs/RESULTS.md](docs/RESULTS.md).
+
 ## Datasets
 
 Data is downloaded on demand into the git-ignored `data/` folder and must pass validation
@@ -125,8 +143,8 @@ ctest --test-dir build/cpu -L cpu
 | P2 | Synthetic oracle scenes | done |
 | P3 | CPU bilateral filter, z-buffer reprojection, gating, fusion | done |
 | P4 | CUDA kernels, CPU/GPU parity, compute-sanitizer | done |
-| P5 | Baselines, metrics, ablation | next |
-| P6 | Demo (PNG/MP4, side-by-side) | planned |
+| P5 | Baselines, metrics, ablation | done ([results](docs/RESULTS.md)) |
+| P6 | Demo (PNG/MP4, side-by-side) | next |
 | P7 | Profiling and optimisation | planned |
 | P8 | Release preparation | planned |
 

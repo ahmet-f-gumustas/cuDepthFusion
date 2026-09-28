@@ -159,3 +159,51 @@ def test_evaluate_cli_says_what_is_missing(
     )
     assert code == cli.EXIT_USAGE_ERROR
     assert "no downloaded sequence for split 'test'" in capsys.readouterr().err
+
+
+def test_stability_tracks_fixed_world_points(dataset: Path) -> None:
+    result = evaluate_sequence(
+        dataset, cli.load_config(None), frames=8, baselines=("B0", "B4"), track_stability=True
+    )
+    stability = {entry.baseline: entry for entry in result.stability}
+    assert set(stability) == {"B0", "B4"}
+    for entry in stability.values():
+        assert entry.tracked_points > 50
+        assert entry.observations > entry.tracked_points
+        assert np.isfinite(entry.median_point_std_m)
+    # Fusion is supposed to make a fixed world point wobble less than the raw input does.
+    assert stability["B4"].median_point_std_m < stability["B0"].median_point_std_m
+
+
+def test_ablation_cli_runs_every_variant(dataset: Path, tmp_path: Path) -> None:
+    output = tmp_path / "ablation"
+    code = cli.main(
+        ["ablate", "--manifest", str(dataset), "--output", str(output), "--frames", "4"]
+    )
+    assert code == cli.EXIT_OK
+    summary = json.loads((output / SUMMARY_NAME).read_text())
+    assert summary["kind"] == "ablation"
+    assert set(summary["overall"]["pooled"]) == set(cli.ABLATIONS)
+    assert summary["overall"]["pooled"]["full"]["frames"] == 4
+
+
+def test_plots_are_written_when_asked(dataset: Path, tmp_path: Path) -> None:
+    output = tmp_path / "run"
+    code = cli.main(
+        [
+            "evaluate",
+            "--manifest",
+            str(dataset),
+            "--output",
+            str(output),
+            "--frames",
+            "3",
+            "--baselines",
+            "B0",
+            "B4",
+            "--plots",
+        ]
+    )
+    assert code == cli.EXIT_OK
+    for name in ("quality.png", "edge_vs_interior.png", "per_frame_rmse.png"):
+        assert (output / name).stat().st_size > 1000, name
