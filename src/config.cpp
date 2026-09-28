@@ -80,6 +80,10 @@ void validate_fusion(const FusionConfig& fusion) {
   require_non_negative("fusion.q_translation", fusion.q_translation);
   require_non_negative("fusion.q_rotation_m2_per_rad2", fusion.q_rotation_m2_per_rad2);
   require_non_negative("fusion.q_gradient", fusion.q_gradient);
+  require_non_negative("fusion.fixed_prior_weight", fusion.fixed_prior_weight);
+  if (fusion.fixed_prior_weight >= 1.0) {
+    fail("fusion.fixed_prior_weight", "must be in [0, 1)", fusion.fixed_prior_weight);
+  }
   require_int_range("fusion.max_history_age_frames", fusion.max_history_age_frames, 0,
                     kMaxHistoryAgeFrames);
 }

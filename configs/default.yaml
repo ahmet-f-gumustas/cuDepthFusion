@@ -31,6 +31,7 @@ fusion:
   q_translation: 0.001
   q_rotation_m2_per_rad2: 0.0001
   q_gradient: 0.25              # (0.5 px)^2: nearest-pixel transport cost on a slope
+  fixed_prior_weight: 0.0       # > 0 replaces the adaptive weights: evaluation baseline B3
   fill_holes: false
   max_history_age_frames: 2
   assume_static_camera: false   # true: a missing pose means identity (explicit opt-in only)

@@ -96,6 +96,21 @@ TEST(FuseFrame, PriorPrecisionIsCappedByMaxHistoryRatio) {
   EXPECT_NEAR(result.variance_m2[0], 1.0 / total, 1e-12);
 }
 
+TEST(FuseFrame, FixedPriorWeightReplacesTheAdaptiveWeights) {
+  Config config;
+  config.fusion.fixed_prior_weight = 0.75;  // baseline B3: the prior always gets 75 %
+  const Measurement measurement = make_measurement({2.0f}, {1}, config.noise);
+  const PriorField prior = make_prior({2.01f}, {1.0e-9f}, {0});  // variance must not matter
+  FusionResult result;
+  result.width = 1;
+  result.height = 1;
+  const FusionStats stats = fuse_frame(config, measurement, prior, result);
+
+  EXPECT_EQ(stats.fused, 1u);
+  EXPECT_NEAR(stats.mean_prior_weight, 0.75, 1e-9);
+  EXPECT_NEAR(result.depth_m[0], 0.25 * 2.0 + 0.75 * prior.depth[0], 1e-6);
+}
+
 TEST(FuseFrame, IncompatiblePriorIsRejectedNeverBlended) {
   const Config config;
   // A new front surface: the current measurement is much nearer than the history.

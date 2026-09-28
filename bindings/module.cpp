@@ -222,6 +222,7 @@ void bind_config(py::module_& m) {
       .def_readwrite("q_translation", &cdf::FusionConfig::q_translation)
       .def_readwrite("q_rotation_m2_per_rad2", &cdf::FusionConfig::q_rotation_m2_per_rad2)
       .def_readwrite("q_gradient", &cdf::FusionConfig::q_gradient)
+      .def_readwrite("fixed_prior_weight", &cdf::FusionConfig::fixed_prior_weight)
       .def_readwrite("fill_holes", &cdf::FusionConfig::fill_holes)
       .def_readwrite("max_history_age_frames", &cdf::FusionConfig::max_history_age_frames)
       .def_readwrite("assume_static_camera", &cdf::FusionConfig::assume_static_camera);

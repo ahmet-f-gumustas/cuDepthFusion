@@ -38,6 +38,9 @@ struct FusionConfig {
   // so the default is (0.5 px)^2 = 0.25. It also makes the history give way near depth edges
   // (spec 5.4). Set to 0 to disable.
   double q_gradient = 0.25;
+  // Evaluation baseline B3 (spec 10.1): when > 0 the prior always gets exactly this share of
+  // the merge weight, instead of the adaptive precision ratio. 0 keeps the adaptive rule.
+  double fixed_prior_weight = 0.0;
   bool fill_holes = false;
   int max_history_age_frames = 2;
   // Treat a missing pose as identity. Must be chosen explicitly; never inferred.

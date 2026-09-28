@@ -398,3 +398,78 @@ own that protocol.
   remove one source of it, at a cost that should be measured in P7 rather than guessed now.
 - Jetson Orin Nano Super is still unverified: the CUDA path needs an on-device build with
   `CMAKE_CUDA_ARCHITECTURES=87`, plus the power mode recorded.
+
+## P5 — Evaluation protocol, baselines and ablation
+
+Goal: measure the method against baselines on held-out sequences, with a protocol fixed
+before the numbers were seen, and report whatever comes out.
+
+### What exists now
+
+- `python/cudepthfusion/eval/` — `metrics.py` (sanitising, the fixed evaluation mask, edge
+  banding, per-frame metrics that keep sums so sequences pool exactly, aggregation),
+  `baselines.py` (B0 raw, B1 filter-only, B2 EMA, B3 fixed weight, B4 full), `runner.py`
+  (one sequence, every method, optional stability tracking), `stability.py` (world points
+  followed with ground-truth poses), `plots.py` (matplotlib Agg) and `artifacts.py` (run
+  folders with `summary.json`, `per_frame.csv`, `config_resolved.yaml`, `environment.json`).
+- CLI: `evaluate` (a split, with `--stability` and `--plots`) and `ablate` (six variants).
+- `configs/icl.yaml` — the configuration frozen on the validation split before the test
+  sequences were run.
+- [docs/RESULTS.md](RESULTS.md) — all numbers, from real runs.
+
+### Protocol, fixed before looking
+
+The evaluation mask is `clean-valid AND raw-input-valid` for every method, so no method can
+improve a metric by discarding pixels; coverage reports what a method failed to fill inside
+that mask. The clean depth is read only by the evaluator — no filter, baseline or parameter
+search ever sees it. Splits: kt0 development, kt1 validation (parameter selection), kt2 and
+kt3 test, run once with the frozen configuration.
+
+Parameter selection used p90 absolute error as the primary metric with the bad-pixel rate as
+the tie-break. The first sweep used interior RMSE and every configuration looked identical;
+probing showed the temporal stage was running normally (292k pixels fused, mean prior weight
+0.62), so the metric was the problem, not the code. The switch was made and written down
+before the test split was touched.
+
+### Headline (test split, kt2 + kt3, 2120 frames)
+
+| Metric | B0 raw | B1 filter | B4 full |
+|---|---|---|---|
+| p90 \|error\| | 26.00 mm | 18.39 mm | **17.02 mm** |
+| bad pixels | 9.55 % | 4.11 % | **3.83 %** |
+| RMSE | 208.07 mm | 207.76 mm | 207.74 mm |
+| temporal std (kt3, median) | 7.25 mm | 2.28 mm | **1.40 mm** |
+
+Ablation says pose compensation carries the method (p90 17.50 → 29.24 mm without it) and the
+gate protects the tail (interior RMSE 120.76 → 139.76 mm without it). Adaptive weighting shows
+no accuracy advantage over a fixed weight on this dataset; only its temporal stability is
+better, and no more than that is claimed.
+
+### The spec's RMSE targets are not met
+
+Targets 10.6.1 (≥15 % RMSE below raw) and 10.6.2 (≥5 % below B1) fail: the improvement is
+0.2 % and 0.01 %. This is measured, not estimated, and the cause is measured too. On ICL,
+2.7 % of pixels carry 99.4 % of the squared error, and 99.7 % of those gross outliers are
+still gross outliers after fusion — because the gate is specified to keep the current
+measurement when it disagrees with the history, and the MVP has nothing that overrules an
+implausible current sample. RMSE on this data is a measurement of that outlier population and
+of little else; the robust metrics and the temporal stability are where the method's effect
+shows. Adding outlier rejection would change this, and it contradicts a rule in the spec, so
+it is a decision to take deliberately before P7, not a patch to slip in.
+
+### Found and fixed along the way
+
+- The editable install must be rebuilt after C++ changes: a stale `_core.so` produced a
+  `fixed_prior_weight` config error that looked like a Python bug.
+- `q_gradient = 0` scores 0.07 mm better on ICL but reintroduces the P3 failure where fusion
+  was worse than its own input on a slanted plane. Kept at 0.25; fitting the one dataset
+  would have been the wrong trade.
+
+### Open items and decisions to carry forward
+
+- Whether to reject gross current-measurement outliers, given that the spec makes the current
+  measurement authoritative. This is the one change that would move RMSE.
+- The performance protocol (GPU compute separated from copies, repeats, power mode, the 4070
+  Laptop and the Jetson) is still P7 work; the P4 latency numbers remain informational.
+- B2's low RMSE with the worst robust metrics is a useful reminder for the demo in P6: show
+  the error distribution, not a single scalar.

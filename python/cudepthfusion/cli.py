@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
+import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -16,12 +16,26 @@ import yaml
 from cudepthfusion import _core
 from cudepthfusion.config import BACKENDS, load_config
 from cudepthfusion.engine import DepthFusion
+from cudepthfusion.eval.artifacts import environment_info, git_commit, utc_now, write_run
+from cudepthfusion.eval.baselines import (
+    BASELINE_NAMES,
+    DEFAULT_EMA_PRIOR_WEIGHT,
+    DEFAULT_FIXED_PRIOR_WEIGHT,
+    EngineBaseline,
+)
+from cudepthfusion.eval.metrics import (
+    BAD_PIXEL_ABS_M,
+    BAD_PIXEL_REL,
+    EDGE_DILATE_PX,
+    EDGE_JUMP_M,
+    aggregate,
+)
+from cudepthfusion.eval.runner import evaluate_sequence
 
 EXIT_OK = 0
 EXIT_FAILED_CHECK = 1
 EXIT_USAGE_ERROR = 2
 
-JETSON_RELEASE_FILE = Path("/etc/nv_tegra_release")
 SMOKE_INTRINSICS = _core.Intrinsics(fx=481.2, fy=480.0, cx=319.5, cy=239.5)
 SMOKE_FRAME_PERIOD_S = 1.0 / 30.0
 
@@ -66,26 +80,54 @@ def _build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--manifest", type=Path, required=True)
     validate.add_argument("--source-frames", type=int, default=8)
     validate.set_defaults(handler=_cmd_validate_data)
+
+    evaluate = commands.add_parser(
+        "evaluate", help="run the baselines over a split and write a run folder (spec 10)"
+    )
+    evaluate.add_argument(
+        "--manifest", type=Path, action="append", help="sequence manifest; repeatable"
+    )
+    evaluate.add_argument("--split", choices=("development", "validation", "test"))
+    evaluate.add_argument("--data-root", type=Path, default=Path("data/icl"))
+    evaluate.add_argument("--config", type=Path, default=None)
+    evaluate.add_argument("--output", type=Path, required=True)
+    evaluate.add_argument("--backend", choices=BACKENDS, default="cpu")
+    evaluate.add_argument("--frames", type=int, default=None, help="limit frames per sequence")
+    evaluate.add_argument("--baselines", nargs="+", default=list(BASELINE_NAMES))
+    evaluate.add_argument("--fixed-prior-weight", type=float, default=DEFAULT_FIXED_PRIOR_WEIGHT)
+    evaluate.add_argument("--ema-prior-weight", type=float, default=DEFAULT_EMA_PRIOR_WEIGHT)
+    evaluate.add_argument("--stability", action="store_true", help="also track fixed world points")
+    evaluate.add_argument("--plots", action="store_true", help="write figures into the run folder")
+    evaluate.set_defaults(handler=_cmd_evaluate)
+
+    ablate = commands.add_parser(
+        "ablate", help="remove one part of the method at a time and measure the cost (spec 10.7)"
+    )
+    ablate.add_argument("--manifest", type=Path, action="append")
+    ablate.add_argument("--split", choices=("development", "validation", "test"))
+    ablate.add_argument("--data-root", type=Path, default=Path("data/icl"))
+    ablate.add_argument("--config", type=Path, default=None)
+    ablate.add_argument("--output", type=Path, required=True)
+    ablate.add_argument("--backend", choices=BACKENDS, default="cpu")
+    ablate.add_argument("--frames", type=int, default=None)
+    ablate.add_argument("--stability", action="store_true")
+    ablate.add_argument("--plots", action="store_true")
+    ablate.set_defaults(handler=_cmd_ablate)
     return parser
 
 
-def environment_info() -> dict[str, Any]:
-    jetson = (
-        JETSON_RELEASE_FILE.read_text(encoding="utf-8").strip()
-        if JETSON_RELEASE_FILE.exists()
-        else None
-    )
-    return {
-        "cudepthfusion": _core.build_info(),
-        "python": platform.python_version(),
-        "numpy": np.__version__,
-        "platform": {
-            "system": platform.system(),
-            "release": platform.release(),
-            "machine": platform.machine(),
-        },
-        "jetson_l4t_release": jetson,
-    }
+# Each variant removes exactly one part of the method (spec 10.7). The flag says whether the
+# pose reaches the engine: dropping it is how "no pose compensation" is expressed, together
+# with assume_static_camera so the temporal stage still runs, on an identity transport.
+ABLATIONS: dict[str, tuple[dict, bool]] = {
+    "full": ({}, True),
+    "no_spatial_filter": ({"spatial": {"enabled": False}}, True),
+    "no_pose_compensation": ({"fusion": {"assume_static_camera": True}}, False),
+    "no_depth_gate": ({"fusion": {"tau_abs_m": 1000.0}}, True),
+    "no_adaptive_weighting": ({"fusion": {"fixed_prior_weight": 0.5}}, True),
+    "no_variance_caps": ({"fusion": {"history_decay": 1.0, "max_history_ratio": 1.0e9}}, True),
+    "no_gradient_term": ({"fusion": {"q_gradient": 0.0}}, True),
+}
 
 
 def _cmd_info(_: argparse.Namespace) -> int:
@@ -170,6 +212,197 @@ def _cmd_validate_data(args: argparse.Namespace) -> int:
     }
     print(json.dumps(summary, indent=2))
     return EXIT_OK if report["passed"] else EXIT_FAILED_CHECK
+
+
+def _resolve_manifests(args: argparse.Namespace) -> list[Path]:
+    if args.manifest:
+        return list(args.manifest)
+    if not args.split:
+        raise ValueError("pass --manifest or --split")
+    from cudepthfusion.data.registry import SEQUENCES
+
+    manifests = []
+    missing = []
+    for spec in SEQUENCES["icl-nuim"].values():
+        if spec.split != args.split:
+            continue
+        candidate = args.data_root / spec.name / "manifest.json"
+        (manifests if candidate.exists() else missing).append(candidate)
+    if not manifests:
+        raise ValueError(
+            f"no downloaded sequence for split '{args.split}' under {args.data_root}; "
+            f"expected one of {[str(path) for path in missing]}"
+        )
+    return manifests
+
+
+def _summarise(results: list, names: tuple[str, ...]) -> dict[str, Any]:
+    sequences = []
+    for result in results:
+        sequences.append(
+            {
+                "sequence": result.sequence,
+                "split": result.split,
+                "manifest": result.manifest_path,
+                "manifest_sha256": result.manifest_sha256,
+                "frames_evaluated": result.frames_evaluated,
+                "per_baseline": {
+                    name: aggregate([m for m in result.metrics if m.baseline == name])
+                    for name in names
+                },
+                "stability": [entry.as_dict() for entry in result.stability],
+            }
+        )
+    pooled = {
+        name: aggregate([m for result in results for m in result.metrics if m.baseline == name])
+        for name in names
+    }
+    # A long sequence must not drown the others, so report the equal-weight average too.
+    sequence_mean = {
+        name: {
+            key: float(
+                sum(entry["per_baseline"][name][key] for entry in sequences) / len(sequences)
+            )
+            for key in ("rmse_m", "mae_m", "bad_pixel_rate", "coverage", "edge_mae_m")
+        }
+        for name in names
+    }
+    return {"sequences": sequences, "overall": {"pooled": pooled, "sequence_mean": sequence_mean}}
+
+
+def _finish_run(args: argparse.Namespace, summary: dict[str, Any], results: list, config) -> int:
+    rows = [metric.row() for result in results for metric in result.metrics]
+    write_run(args.output, summary, rows, config)
+    if getattr(args, "plots", False):
+        from cudepthfusion.eval.plots import write_plots
+
+        for path in write_plots(args.output, summary, rows):
+            print(f"wrote {path}", file=sys.stderr)
+    print(
+        json.dumps(
+            {"output": str(args.output), "overall": summary["overall"]},
+            indent=2,
+            default=lambda value: None,
+        )
+    )
+    return EXIT_OK
+
+
+def _cmd_ablate(args: argparse.Namespace) -> int:
+    from cudepthfusion.data.icl_nuim import DatasetError
+    from cudepthfusion.data.manifest import ManifestError
+
+    def log(message: str) -> None:
+        print(message, file=sys.stderr, flush=True)
+
+    try:
+        manifests = _resolve_manifests(args)
+        config = load_config(args.config)
+        results = []
+        for manifest in manifests:
+            log(f"ablating on {manifest}")
+            methods = []
+            for name, (overrides, use_pose) in ABLATIONS.items():
+                data = config.to_dict()
+                for section, values in overrides.items():
+                    data[section].update(values)
+                methods.append(
+                    EngineBaseline(
+                        name,
+                        f"ablation: {name}",
+                        load_config(data),
+                        args.backend,
+                        use_pose=use_pose,
+                    )
+                )
+            results.append(
+                evaluate_sequence(
+                    manifest,
+                    config,
+                    backend=args.backend,
+                    frames=args.frames,
+                    log=log,
+                    methods=methods,
+                    track_stability=args.stability,
+                )
+            )
+    except (DatasetError, ManifestError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+
+    names = tuple(ABLATIONS)
+    summary = {
+        "created_at": utc_now(),
+        "command": shlex.join(["python", "-m", "cudepthfusion.cli", *sys.argv[1:]]),
+        "git_commit": git_commit(),
+        "backend": args.backend,
+        "split": args.split,
+        "frames_limit": args.frames,
+        "kind": "ablation",
+        "variants": {name: str(overrides) for name, (overrides, _) in ABLATIONS.items()},
+        "thresholds": {
+            "bad_pixel_abs_m": BAD_PIXEL_ABS_M,
+            "bad_pixel_rel": BAD_PIXEL_REL,
+            "edge_jump_m": EDGE_JUMP_M,
+            "edge_dilate_px": EDGE_DILATE_PX,
+        },
+        **_summarise(results, names),
+    }
+    return _finish_run(args, summary, results, config)
+
+
+def _cmd_evaluate(args: argparse.Namespace) -> int:
+    from cudepthfusion.data.icl_nuim import DatasetError
+    from cudepthfusion.data.manifest import ManifestError
+
+    def log(message: str) -> None:
+        print(message, file=sys.stderr, flush=True)
+
+    try:
+        manifests = _resolve_manifests(args)
+        config = load_config(args.config)
+        results = []
+        for manifest in manifests:
+            log(f"evaluating {manifest}")
+            results.append(
+                evaluate_sequence(
+                    manifest,
+                    config,
+                    backend=args.backend,
+                    baselines=tuple(args.baselines),
+                    frames=args.frames,
+                    log=log,
+                    fixed_prior_weight=args.fixed_prior_weight,
+                    ema_prior_weight=args.ema_prior_weight,
+                    track_stability=args.stability,
+                )
+            )
+    except (DatasetError, ManifestError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+
+    names = tuple(args.baselines)
+    summary = {
+        "created_at": utc_now(),
+        "command": shlex.join(["python", "-m", "cudepthfusion.cli", *sys.argv[1:]]),
+        "git_commit": git_commit(),
+        "backend": args.backend,
+        "split": args.split,
+        "frames_limit": args.frames,
+        "kind": "evaluation",
+        "config_file": str(args.config) if args.config else None,
+        "baselines": results[0].baselines if results else {},
+        "thresholds": {
+            "bad_pixel_abs_m": BAD_PIXEL_ABS_M,
+            "bad_pixel_rel": BAD_PIXEL_REL,
+            "edge_jump_m": EDGE_JUMP_M,
+            "edge_dilate_px": EDGE_DILATE_PX,
+            "fixed_prior_weight": args.fixed_prior_weight,
+            "ema_prior_weight": args.ema_prior_weight,
+        },
+        **_summarise(results, names),
+    }
+    return _finish_run(args, summary, results, config)
 
 
 def _smoke_invariant_failures(index: int, depth: np.ndarray, result: Any) -> list[str]:

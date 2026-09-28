@@ -142,8 +142,14 @@ FusionStats fuse_frame(const Config& config, const Measurement& measurement,
           const double precision_current = 1.0 / variance_current;
           // The caps keep re-used and spatially filtered observations from piling up into
           // overconfidence; the result is not a full Bayesian posterior (spec 5.6).
-          const double precision_prior = std::min(fusion.history_decay / variance_prior_merge,
-                                                  fusion.max_history_ratio * precision_current);
+          // With fixed_prior_weight the weights ignore the variances entirely: that is
+          // baseline B3, which isolates what the adaptive confidence is worth.
+          const double precision_prior =
+              fusion.fixed_prior_weight > 0.0
+                  ? precision_current * fusion.fixed_prior_weight /
+                        (1.0 - fusion.fixed_prior_weight)
+                  : std::min(fusion.history_decay / variance_prior_merge,
+                             fusion.max_history_ratio * precision_current);
           const double total = precision_current + precision_prior;
           result.depth_m[i] = static_cast<float>(
               (precision_current * depth_current + precision_prior * depth_prior) / total);
