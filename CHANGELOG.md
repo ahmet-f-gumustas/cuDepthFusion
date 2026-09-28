@@ -4,6 +4,50 @@ Versions follow the roadmap in the development spec: 0.0.x releases are phase
 snapshots before the first functional release, and 0.1.0 is the first release with
 CPU/CUDA fusion evaluated on ICL-NUIM.
 
+## [0.1.0] - 2026-09-28
+
+The first functional release: pose-aware temporal depth fusion on the CPU and on CUDA,
+evaluated on ICL-NUIM with a fixed protocol. Release preparation (P8: citation file,
+contributing guide, a single reproduction command, a clean-install check) is still to come.
+
+### Added
+
+- **Data (P1).** ICL-NUIM downloader with resumable, locked downloads and a manifest;
+  `validate-data`, which establishes the dataset's conventions from evidence (a 48-candidate
+  search) before any filter may read it. kt0–kt3 validated.
+- **Synthetic oracle (P2).** Analytic scenes with exact ground truth and seeded noise, nine
+  scenarios, no download needed.
+- **CPU fusion (P3).** Mask-aware bilateral filter, forward reprojection with a 64-bit
+  z-buffer, a compatibility gate on transported uncertainty, confidence-weighted merge with
+  caps, optional history-only mode with a TTL, and reset handling.
+- **CUDA backend (P4).** The same algorithm on the GPU; `backend="cuda"` never falls back to
+  the CPU. Parity against the CPU reference and compute-sanitizer evidence.
+- **Evaluation (P5).** Baselines B0–B4, a fixed evaluation mask, sequence splits, metrics,
+  temporal stability, ablation, and `evaluate` / `ablate` commands. `configs/icl.yaml` frozen
+  on the validation split.
+- **Demo (P6).** `examples/compare_depth.py`: six panels on shared scales, PNG/MP4 output,
+  separate process-latency and demo-throughput numbers.
+- **Profiling (P7).** CUDA-event stage timings in `Diagnostics.device`, the `benchmark`
+  command, and an optimised CUDA pipeline: 1.48 → 0.94 ms per 640×480 frame (median, RTX 4090
+  Laptop), quality unchanged.
+
+### Results (ICL-NUIM test split, kt2 + kt3)
+
+Against the raw input, the full method lowers the p90 error from 26.0 to 17.0 mm and the
+bad-pixel rate from 9.6 to 3.8 %, makes a fixed world point about 5× steadier over time, and
+keeps 100 % coverage. See `docs/RESULTS.md` and `docs/PERFORMANCE.md`.
+
+### Known limitations
+
+- **The spec's RMSE targets are not met** (0.2 % against raw where 15 % was targeted, 0.01 %
+  against the bilateral filter where 5 % was targeted). 2.7 % of pixels carry 99.4 % of the
+  squared error, and the gate keeps the current measurement by design, so gross input outliers
+  pass through. Whether to add outlier rejection is an open design decision.
+- Measured on an RTX 4090 Laptop only, while another job shared the GPU. The RTX 4070 Laptop
+  (the 16.7 ms target) and the Jetson Orin Nano Super are untested.
+- Evaluated on ICL-NUIM (synthetic renderings with a noise model) only; no real-sensor
+  dataset yet.
+
 ## [0.0.1] - 2026-09-11 (pre-release)
 
 The P0 skeleton. **No depth fusion yet**: the engine returns the sanitised current
