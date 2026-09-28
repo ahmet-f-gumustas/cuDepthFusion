@@ -21,6 +21,7 @@ SUMMARY_NAME = "summary.json"
 PER_FRAME_NAME = "per_frame.csv"
 CONFIG_NAME = "config_resolved.yaml"
 ENVIRONMENT_NAME = "environment.json"
+LATENCY_NAME = "latency.csv"
 JETSON_RELEASE_FILE = Path("/etc/nv_tegra_release")
 
 
@@ -86,8 +87,15 @@ def write_run(
     (output / ENVIRONMENT_NAME).write_text(
         json.dumps(environment_info(), indent=2) + "\n", encoding="utf-8"
     )
-    if rows:
-        with (output / PER_FRAME_NAME).open("w", newline="", encoding="utf-8") as stream:
-            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
-            writer.writeheader()
-            writer.writerows(rows)
+    write_table(output / PER_FRAME_NAME, rows)
+
+
+def write_table(path: Path, rows: list[dict[str, Any]]) -> None:
+    """One CSV, columns taken from the first row. No rows means no file, not an empty one."""
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)

@@ -16,7 +16,18 @@ dependencies = ["numpy>=1.23", "PyYAML>=6.0"]
 data = ["opencv-python-headless>=4.8"]
 # Evaluation runs write figures.
 eval = ["matplotlib>=3.7"]
-dev = ["cudepthfusion[data]", "cudepthfusion[eval]", "pytest>=7.4", "pytest-cov>=5", "ruff>=0.5", "clang-format>=18"]
+# The comparison demo colours panels and writes PNG/MP4; --interactive needs a GUI build
+# (opencv-python) instead of the headless one.
+demo = ["opencv-python-headless>=4.8"]
+dev = [
+    "cudepthfusion[data]",
+    "cudepthfusion[eval]",
+    "cudepthfusion[demo]",
+    "pytest>=7.4",
+    "pytest-cov>=5",
+    "ruff>=0.5",
+    "clang-format>=18",
+]
 
 [project.scripts]
 cudepthfusion = "cudepthfusion.cli:main"
