@@ -190,3 +190,71 @@ TEST(Parity, ResetPoseLossAndResizeBehaveTheSame) {
 
 }  // namespace
 }  // namespace cudepthfusion
+
+namespace cudepthfusion {
+namespace {
+
+// The CUDA kernels count with per-block reductions; every counter must still match the CPU.
+TEST(Parity, EveryDiagnosticCounterAgrees) {
+  if (!cuda_available()) {
+    GTEST_SKIP() << "no CUDA build or no device";
+  }
+  Config config;
+  config.fusion.fill_holes = true;  // exercise the history-only and expired counters too
+  const std::vector<Frame> frames = make_sequence(10, 0.0f, 3);
+  DepthFusion cpu(config, Backend::kCpu);
+  DepthFusion gpu(config, Backend::kCuda);
+
+  for (const Frame& frame : frames) {
+    const Diagnostics a = cpu.process(to_input(frame)).diagnostics;
+    const Diagnostics b = gpu.process(to_input(frame)).diagnostics;
+    EXPECT_EQ(a.input.num_valid, b.input.num_valid);
+    EXPECT_EQ(a.input.num_zero, b.input.num_zero);
+    EXPECT_EQ(a.input.num_nonfinite, b.input.num_nonfinite);
+    EXPECT_EQ(a.input.num_below_min, b.input.num_below_min);
+    EXPECT_EQ(a.input.num_above_max, b.input.num_above_max);
+    EXPECT_EQ(a.fusion.prior_candidates, b.fusion.prior_candidates);
+    EXPECT_EQ(a.fusion.prior_behind_camera, b.fusion.prior_behind_camera);
+    EXPECT_EQ(a.fusion.prior_off_screen, b.fusion.prior_off_screen);
+    EXPECT_EQ(a.fusion.prior_visible, b.fusion.prior_visible);
+    EXPECT_EQ(a.fusion.fused, b.fusion.fused);
+    EXPECT_EQ(a.fusion.current_only, b.fusion.current_only);
+    EXPECT_EQ(a.fusion.rejected_current_nearer, b.fusion.rejected_current_nearer);
+    EXPECT_EQ(a.fusion.rejected_current_farther, b.fusion.rejected_current_farther);
+    EXPECT_EQ(a.fusion.history_only, b.fusion.history_only);
+    EXPECT_EQ(a.fusion.history_expired, b.fusion.history_expired);
+    EXPECT_EQ(a.fusion.invalid, b.fusion.invalid);
+    // The GPU stores transported variances as float between kernels, so the averaged weight
+    // agrees to about 1e-6, not to double precision. The decisions above agree exactly.
+    EXPECT_NEAR(a.fusion.mean_prior_weight, b.fusion.mean_prior_weight, 1e-5);
+  }
+}
+
+TEST(Parity, DeviceTimingsExistOnTheGpuAndNowhereElse) {
+  if (!cuda_available()) {
+    GTEST_SKIP() << "no CUDA build or no device";
+  }
+  const std::vector<Frame> frames = make_sequence(3, 0.0f, 4);
+  DepthFusion cpu(Config{}, Backend::kCpu);
+  DepthFusion gpu(Config{}, Backend::kCuda);
+  for (const Frame& frame : frames) {
+    const Diagnostics host = cpu.process(to_input(frame)).diagnostics;
+    const Diagnostics device = gpu.process(to_input(frame)).diagnostics;
+    EXPECT_FALSE(host.device.measured);
+    ASSERT_TRUE(device.device.measured);
+    const DeviceTimings& t = device.device;
+    for (const double value :
+         {t.upload_ms, t.compute_ms, t.download_ms, t.sanitize_ms, t.bilateral_ms, t.variance_ms,
+          t.reproject_ms, t.fuse_ms, t.history_ms}) {
+      EXPECT_GE(value, 0.0);
+    }
+    // The stages partition the compute interval, and nothing on the device outlasts the call.
+    const double stages =
+        t.sanitize_ms + t.bilateral_ms + t.variance_ms + t.reproject_ms + t.fuse_ms + t.history_ms;
+    EXPECT_NEAR(stages, t.compute_ms, 0.01);
+    EXPECT_LE(t.upload_ms + t.compute_ms + t.download_ms, device.host_process_ms);
+  }
+}
+
+}  // namespace
+}  // namespace cudepthfusion

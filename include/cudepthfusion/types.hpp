@@ -104,6 +104,21 @@ struct FusionStats {
   double mean_prior_weight = 0.0;  // mean P_prior / (P_cur + P_prior) over fused pixels
 };
 
+// Measured with CUDA events on the engine's stream. The CPU backend leaves `measured` false:
+// a time that was not measured is not reported as zero.
+struct DeviceTimings {
+  bool measured = false;
+  double upload_ms = 0.0;    // host-to-device copy of the input
+  double compute_ms = 0.0;   // the kernel chain plus the history update, no host copies
+  double download_ms = 0.0;  // device-to-host copy of every output and the counters
+  double sanitize_ms = 0.0;
+  double bilateral_ms = 0.0;
+  double variance_ms = 0.0;
+  double reproject_ms = 0.0;  // clearing the z-buffer, projection and gather
+  double fuse_ms = 0.0;
+  double history_ms = 0.0;  // keeping this frame's result as the next frame's history
+};
+
 struct Diagnostics {
   std::uint64_t frame_index = 0;
   ResetReason reset_reason = ResetReason::kNone;
@@ -112,6 +127,7 @@ struct Diagnostics {
   InputStats input;
   FusionStats fusion;
   double host_process_ms = 0.0;  // wall clock inside DepthFusion::process()
+  DeviceTimings device;
   std::vector<std::string> notes;
 };
 

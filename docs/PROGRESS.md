@@ -534,3 +534,66 @@ never as a zero; the P7 benchmark owns it.
   simulates the headless failure, not by a real window.
 - The video codec is `mp4v` through OpenCV. If a build has no video support the demo says so
   and suggests `--save-frames`; the test skips in that case rather than reporting a pass.
+
+## P7 — Profiling and optimisation
+
+Goal: measure where the time goes with a fixed protocol, change what the measurements point
+at, and show before and after for both latency and quality.
+
+### What exists now
+
+- CUDA-event timings for every stage in `Diagnostics.device` (`device_timings` in Python;
+  `None` on the CPU backend, which has no device timeline).
+- `cli benchmark` and `configs/benchmark.yaml` (spec 10.5): frames decoded before timing,
+  warm-up, repeats that replay the same slice after a reset, median/p95/p99, per-stage GPU
+  times, nvidia-smi state per repeat, the Jetson power mode, and a flag when other processes
+  share the GPU.
+- The optimised CUDA pipeline, and [docs/PERFORMANCE.md](PERFORMANCE.md) with the full record.
+
+### Result (640×480, RTX 4090 Laptop, GPU shared with a training job)
+
+| | Before | After |
+|---|---|---|
+| process latency, median | 1.483 ms | **0.938 ms** (−37 %) |
+| process latency, p95 | 2.789 ms | 2.394 ms |
+| all six kernels (Nsight Systems) | 319 µs | 63 µs |
+| fuse kernel | 270.6 µs | 14.6 µs |
+| B4 p90 / bad pixels / RMSE, test split | 17.016 mm / 3.83 % / 207.744 mm | identical |
+
+### What the profile said, and what was done
+
+- The fuse kernel was 85 % of the kernel time. Per-thread shared atomics were part of it
+  (fixed with warp ballots); the rest was FP64 arithmetic, which this GPU runs at 1/64 of the
+  FP32 rate. Removing divisions changed nothing, which is how that was established. The gate
+  and merge now run in float on the GPU as spec 7.2 asks; the CPU reference keeps double.
+  Parity on 150 real kt1 frames did not change by a single pixel, and the validation and test
+  metrics are identical.
+- The history is kept by swapping buffers instead of four device copies.
+- Uploads and downloads are staged through pinned memory, and the host copies into the owned
+  results overlap the remaining transfers. A micro-benchmark showed the download sits at this
+  laptop's link limit (about 13 GB/s), where one copy and six copies take the same time.
+- Measured and rejected: the shared-memory tile for the bilateral filter (bit-identical, no
+  faster; the kernel is bound by `expf`), packing the outputs into one transfer, and deriving
+  outputs on the host. CUDA Graphs were not tried; there is little host launch time left to
+  win at this size.
+
+### Found and fixed along the way
+
+- The first before/after comparison credited the pinned downloads with halving the transfer
+  time. It had not accounted for the host copies, which moved out of the device interval: host
+  work went from 0.008 to 0.226 ms. Adding a third build (kernel changes only, old copy path)
+  gave the honest attribution: kernels 1.483 → 1.215 ms, copies 1.215 → 0.938 ms.
+- The contention flag counted the benchmark's own process, so an idle GPU would have been
+  reported as shared. It now excludes its own PID; a test covers it.
+- `ncu` needs GPU performance-counter permission that this account does not have. The
+  diagnosis used Nsight Systems, the compiler's register report and controlled experiments
+  instead.
+
+### Open items and decisions to carry forward
+
+- Every run here shared the GPU with a training job. Rerun `cli benchmark` on an idle GPU,
+  on the RTX 4070 Laptop (the 16.7 ms target) and on the Jetson Orin Nano Super, where CPU and
+  GPU share DRAM and zero-copy may replace the staging entirely.
+- The download (0.39 ms) is now the largest single cost and is at the link's limit. Only
+  fewer bytes or a device-side consumer would reduce it.
+- Outlier rejection, which would move RMSE (P5), is still a decision for the spec's owner.

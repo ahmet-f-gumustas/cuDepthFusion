@@ -7,15 +7,15 @@ occlusions or moving foregrounds. A C++ reference implementation defines
 correctness, a CUDA backend makes it fast, and Python drives datasets, evaluation
 and demos.
 
-> **Status: evaluated on held-out sequences, with a comparison demo (P6). Profiling is next (P7).**
+> **Status: evaluated, demonstrated and profiled (P7). Release preparation is next (P8).**
 > On the ICL-NUIM test split the full method cuts the p90 error by 35 % and the bad-pixel
 > rate by 60 % against the raw input, and a fixed world point is 5× steadier over time,
 > without losing a single valid measurement. **RMSE barely moves, so the spec's two RMSE
 > targets are not met**: a 2.7 % population of gross input outliers owns 99.4 % of the
-> squared error, and the gate passes them through by design. The measurements, the ablation
-> and that analysis are in [docs/RESULTS.md](docs/RESULTS.md); the algorithm is in
-> [docs/ALGORITHM.md](docs/ALGORITHM.md) and the history in
-> [docs/PROGRESS.md](docs/PROGRESS.md).
+> squared error, and the gate passes them through by design. On an RTX 4090 Laptop a
+> 640×480 frame takes 0.94 ms (median, NumPy in to NumPy out). Details:
+> [RESULTS.md](docs/RESULTS.md), [PERFORMANCE.md](docs/PERFORMANCE.md),
+> [ALGORITHM.md](docs/ALGORITHM.md), [PROGRESS.md](docs/PROGRESS.md).
 
 ## Hardware targets
 
@@ -103,6 +103,18 @@ A run folder holds `summary.json`, `per_frame.csv`, `config_resolved.yaml`,
 `environment.json` and the figures, tagged with the git commit and the dataset hashes.
 Results and what they do and do not show: [docs/RESULTS.md](docs/RESULTS.md).
 
+## Benchmark
+
+```bash
+python -m cudepthfusion.cli benchmark --config configs/benchmark.yaml --output runs/performance
+```
+
+Frames are decoded into memory before timing; each repeat resets the engine and replays the
+same slice of real frames (100 warm-up, 500 measured, 5 repeats). GPU compute (CUDA events),
+process latency and per-stage times are recorded separately, together with the GPU's clock,
+temperature and load and whether another process was using it. Protocol and results:
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+
 ## Demo
 
 ```bash
@@ -160,8 +172,8 @@ ctest --test-dir build/cpu -L cpu
 | P4 | CUDA kernels, CPU/GPU parity, compute-sanitizer | done |
 | P5 | Baselines, metrics, ablation | done ([results](docs/RESULTS.md)) |
 | P6 | Demo (PNG/MP4, side-by-side) | done ([demo](docs/DEMO.md)) |
-| P7 | Profiling and optimisation | next |
-| P8 | Release preparation | planned |
+| P7 | Profiling and optimisation | done ([performance](docs/PERFORMANCE.md)) |
+| P8 | Release preparation | next |
 
 ## License
 

@@ -1,0 +1,46 @@
+# Performance benchmark (spec 10.5): `python -m cudepthfusion.cli benchmark
+#     --config configs/benchmark.yaml --output runs/performance`.
+#
+# The algorithm parameters are exactly those of configs/icl.yaml (a test keeps the two equal),
+# so the timed workload is the evaluated one. Each repeat resets the engine and replays the
+# same slice of real consecutive frames: warmup_frames unmeasured, then measured_frames timed.
+
+backend: cuda
+
+depth:
+  min_m: 0.2
+  max_m: 8.0
+
+spatial:
+  enabled: true
+  radius: 2
+  sigma_xy_px: 2.0
+  sigma_depth_m: 0.05          # selected on kt1: p90 17.74 -> 17.50 mm, bad pixels 3.79 -> 3.59 %
+
+noise:
+  a_m: 0.002
+  b_per_m: 0.001
+
+fusion:
+  tau_abs_m: 0.015
+  k_sigma: 3.0
+  history_decay: 0.95
+  max_history_ratio: 8.0
+  variance_floor_m2: 0.000001
+  variance_reference_m2: 0.0001
+  q0_m2: 0.000004
+  q_translation: 0.001
+  q_rotation_m2_per_rad2: 0.0001
+  q_gradient: 0.25
+  fixed_prior_weight: 0.0
+  fill_holes: false
+  max_history_age_frames: 2
+  assume_static_camera: false
+
+reset:
+  max_frame_gap_s: 0.2
+
+benchmark:
+  warmup_frames: 100
+  measured_frames: 500
+  repeats: 5

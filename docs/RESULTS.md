@@ -149,8 +149,9 @@ a valid current measurement always wins. It should be chosen deliberately, not s
 
 ## Latency
 
-Informational, from the P4 run (640×480, 60 real kt0 frames, medians after warm-up, including
-host-to-device and device-to-host copies and the synchronisation): **CPU 53.0 ms, CUDA
-1.45 ms**, p95 2.56 ms. This is not the benchmark the spec asks for: GPU compute is not
-separated from the copies, there are no repeats, and no power mode is recorded. The RTX 4070
-Laptop target and the Jetson Orin Nano Super remain untested.
+Measured with the benchmark protocol in P7, see [PERFORMANCE.md](PERFORMANCE.md): at 640×480
+on the RTX 4090 Laptop, CUDA process latency is 0.94 ms median and 2.4 ms p95 (the GPU was
+shared with another job during the runs). P7 did not change a single quality number above:
+re-running the validation and test splits after the optimisations gave the same p90,
+bad-pixel rate and edge MAE, and an RMSE within 1e-11 m. The RTX 4070 Laptop target and the
+Jetson Orin Nano Super remain untested.

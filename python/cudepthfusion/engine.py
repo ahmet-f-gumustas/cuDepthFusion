@@ -40,6 +40,25 @@ class FusionStats:
 
 
 @dataclass(frozen=True)
+class DeviceTimings:
+    """CUDA-event times on the engine's stream, in milliseconds (CUDA backend only).
+
+    ``compute_ms`` is the kernel chain plus the history update with the host copies left out
+    (spec 10.5.1); ``upload_ms`` and ``download_ms`` are those copies.
+    """
+
+    upload_ms: float
+    compute_ms: float
+    download_ms: float
+    sanitize_ms: float
+    bilateral_ms: float
+    variance_ms: float
+    reproject_ms: float
+    fuse_ms: float
+    history_ms: float
+
+
+@dataclass(frozen=True)
 class Diagnostics:
     frame_index: int
     reset_reason: str
@@ -49,6 +68,7 @@ class Diagnostics:
     fusion: FusionStats
     host_process_ms: float
     notes: tuple[str, ...]
+    device_timings: DeviceTimings | None = None  # None on the CPU backend: not measured
 
 
 @dataclass(frozen=True, eq=False)
@@ -140,5 +160,10 @@ def _to_result(raw: dict[str, Any]) -> FusionResult:
             fusion=FusionStats(**diagnostics["fusion"]),
             host_process_ms=diagnostics["host_process_ms"],
             notes=tuple(diagnostics["notes"]),
+            device_timings=(
+                DeviceTimings(**diagnostics["device_timings"])
+                if diagnostics.get("device_timings") is not None
+                else None
+            ),
         ),
     )
