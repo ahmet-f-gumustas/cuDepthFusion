@@ -17,6 +17,7 @@ and over, because a history that converged on a static input is not the workload
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -106,8 +107,18 @@ def gpu_state() -> dict[str, Any]:
     apps = _run(
         ["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"]
     )
-    state["other_compute_processes"] = len(apps.splitlines()) if apps else 0
+    state["other_compute_processes"] = _other_processes(apps or "", os.getpid())
     return state
+
+
+def _other_processes(listing: str, own_pid: int) -> int:
+    """Compute processes on the GPU other than this one (which is on the list itself)."""
+    count = 0
+    for line in listing.splitlines():
+        pid = line.split(",")[0].strip()
+        if pid and pid != str(own_pid):
+            count += 1
+    return count
 
 
 def power_mode() -> dict[str, Any]:

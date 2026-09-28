@@ -1,18 +1,22 @@
-// CUDA backend: the same algorithm as the CPU reference, one thread per pixel, five kernels
+// CUDA backend: the same algorithm as the CPU reference, one thread per pixel, six kernels
 // sequenced in one stream. Buffers are allocated on the first frame and on resize only, never
-// inside the steady frame loop (spec 7).
+// inside the steady frame loop (spec 7); the history is the previous output buffer, swapped in
+// place rather than copied.
 //
-// Where the arithmetic is done in double here, it is because the CPU reference does it there
-// too and the decision must not depend on the backend: input classification, the measurement
-// noise model, the compatibility gate and the merge weights. The bilateral filter runs in
-// float (spec 7.2), so filtered depths can differ from the CPU by about 1e-7 m, which can flip
-// a pixel that sits exactly on the gate. Those pixels are counted by the parity tests.
+// Precision (spec 7.2): input classification, the measurement noise model and the variance
+// transport run in double, as on the CPU, because they are cheap. The bilateral filter, the
+// compatibility gate and the merge run in float: the CPU reference keeps double there, and a
+// pixel whose depth difference sits within float rounding of tau can fall to the other side.
+// The parity tests count those pixels (spec 9.3); P7 measured none on 150 real kt1 frames beyond
+// the z-buffer ties that were already there (docs/PERFORMANCE.md).
 
 #include <cuda_runtime.h>
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "cpu/reproject.hpp"
@@ -49,9 +53,7 @@ struct DeviceConfig {
   double min_m, max_m, noise_a, noise_b;
   int radius;
   float spatial_scale, range_scale;
-  double tau_abs, k_sigma, history_decay, max_history_ratio;
-  double variance_floor, variance_reference, q_gradient, process_noise, fixed_prior_weight;
-  int fill_holes, max_history_age;
+  double process_noise;
 };
 
 struct DeviceCounters {
@@ -61,6 +63,20 @@ struct DeviceCounters {
   unsigned long long history_only, history_expired, invalid;
   double prior_weight_sum;
 };
+
+// Counting happens per warp: a ballot tells lane 0 how many lanes matched, and lane 0 adds that
+// to the block's shared tally with one atomic. Every thread of the block must reach these calls,
+// including threads outside the image, because the ballot uses the full warp mask.
+__device__ inline bool is_warp_leader() {
+  return ((threadIdx.y * blockDim.x + threadIdx.x) & 31u) == 0u;
+}
+
+__device__ inline void warp_count(bool flag, unsigned long long* tally) {
+  const unsigned int lanes = __ballot_sync(0xFFFFFFFFu, flag);
+  if (is_warp_leader() && lanes != 0u) {
+    atomicAdd(tally, static_cast<unsigned long long>(__popc(lanes)));
+  }
+}
 
 __global__ void sanitize_kernel(const float* __restrict__ input, int width, int height,
                                 DeviceConfig config, float* __restrict__ depth,
@@ -74,26 +90,30 @@ __global__ void sanitize_kernel(const float* __restrict__ input, int width, int 
 
   const int x = blockIdx.x * blockDim.x + threadIdx.x;
   const int y = blockIdx.y * blockDim.y + threadIdx.y;
+  int category = -1;  // outside the image: counted nowhere
   if (x < width && y < height) {
     const int index = y * width + x;
     const float z = input[index];
     float out_depth = 0.0f;
     unsigned char out_valid = 0;
     if (!isfinite(z)) {
-      atomicAdd(&tally[2], 1ull);
+      category = 2;
     } else if (z == 0.0f) {
-      atomicAdd(&tally[1], 1ull);
+      category = 1;
     } else if (static_cast<double>(z) < config.min_m) {
-      atomicAdd(&tally[3], 1ull);
+      category = 3;
     } else if (static_cast<double>(z) > config.max_m) {
-      atomicAdd(&tally[4], 1ull);
+      category = 4;
     } else {
       out_depth = z;
       out_valid = 1;
-      atomicAdd(&tally[0], 1ull);
+      category = 0;
     }
     depth[index] = out_depth;
     valid[index] = out_valid;
+  }
+  for (int k = 0; k < 5; ++k) {
+    warp_count(category == k, &tally[k]);
   }
   __syncthreads();
   if (thread == 0) {
@@ -105,6 +125,11 @@ __global__ void sanitize_kernel(const float* __restrict__ input, int width, int 
   }
 }
 
+// Mask-aware bilateral filter reading its window straight from global memory. A shared-memory
+// tile with a halo (spec 7.4) was built and measured in P7: bit-identical output, no speed-up
+// (19.1 us global against 20.6 us tiled at 640x480, radius 2, in a run where the untouched
+// kernels were ~7% slower too), because the 25 expf per pixel bound the kernel and the L1/L2
+// caches already serve the overlapping loads. The simpler version stays.
 __global__ void bilateral_kernel(const float* __restrict__ depth,
                                  const std::uint8_t* __restrict__ valid, int width, int height,
                                  DeviceConfig config, float* __restrict__ filtered) {
@@ -173,11 +198,14 @@ __global__ void project_kernel(const float* __restrict__ history_depth,
 
   const int x = blockIdx.x * blockDim.x + threadIdx.x;
   const int y = blockIdx.y * blockDim.y + threadIdx.y;
+  bool candidate = false;
+  bool behind = false;
+  bool off_screen = false;
   if (x < width && y < height) {
     const int source = y * width + x;
     const float z = history_depth[source];
     if (history_valid[source] != 0 && z > 0.0f && isfinite(z)) {
-      atomicAdd(&tally[0], 1ull);
+      candidate = true;
       const float ray_x = (static_cast<float>(x) - previous.cx) * previous.inv_fx;
       const float ray_y = (static_cast<float>(y) - previous.cy) * previous.inv_fy;
       const float px = z * ray_x;
@@ -189,18 +217,18 @@ __global__ void project_kernel(const float* __restrict__ history_depth,
       const float zc = pose.rotation[6] * px + pose.rotation[7] * py + pose.rotation[8] * z +
                        pose.translation[2];
       if (!isfinite(zc) || !(zc > 0.0f)) {
-        atomicAdd(&tally[1], 1ull);
+        behind = true;
       } else {
         const float u = current.fx * (xc / zc) + current.cx;
         const float v = current.fy * (yc / zc) + current.cy;
         if (!isfinite(u) || !isfinite(v) || u < -1.0f || v < -1.0f ||
             u > static_cast<float>(width) || v > static_cast<float>(height)) {
-          atomicAdd(&tally[2], 1ull);
+          off_screen = true;
         } else {
           const int target_x = static_cast<int>(floorf(u + 0.5f));
           const int target_y = static_cast<int>(floorf(v + 0.5f));
           if (target_x < 0 || target_x >= width || target_y < 0 || target_y >= height) {
-            atomicAdd(&tally[2], 1ull);
+            off_screen = true;
           } else {
             const unsigned long long key =
                 (static_cast<unsigned long long>(__float_as_uint(zc)) << 32) |
@@ -211,6 +239,9 @@ __global__ void project_kernel(const float* __restrict__ history_depth,
       }
     }
   }
+  warp_count(candidate, &tally[0]);
+  warp_count(behind, &tally[1]);
+  warp_count(off_screen, &tally[2]);
   __syncthreads();
   if (thread == 0) {
     atomicAdd(&counters->candidates, tally[0]);
@@ -235,6 +266,7 @@ __global__ void gather_kernel(const unsigned long long* __restrict__ winner,
 
   const int x = blockIdx.x * blockDim.x + threadIdx.x;
   const int y = blockIdx.y * blockDim.y + threadIdx.y;
+  bool present = false;
   if (x < width && y < height) {
     const int target = y * width + x;
     const unsigned long long key = winner[target];
@@ -258,9 +290,10 @@ __global__ void gather_kernel(const unsigned long long* __restrict__ winner,
       prior_variance[target] = static_cast<float>(transported);
       prior_age[target] = history_age[source];
       prior_present[target] = 1;
-      atomicAdd(&visible, 1ull);
+      present = true;
     }
   }
+  warp_count(present, &visible);
   __syncthreads();
   if (thread == 0) {
     atomicAdd(&counters->visible, visible);
@@ -287,13 +320,24 @@ __device__ inline float local_gradient(const float* depth, const std::uint8_t* v
   return largest;
 }
 
+// The gate and the merge in FP32 (spec 7.2): this kernel runs on the FP64 pipe otherwise, which
+// on consumer GPUs is 1/64 of the FP32 rate and made it the most expensive stage by far (P7,
+// docs/PERFORMANCE.md). The CPU reference keeps double. The two agree exactly except for a pixel
+// whose |current - prior| lies within float rounding of tau, which the parity tests count
+// separately (spec 9.3). Constants arrive already narrowed to float.
+struct FuseConstants {
+  float tau_abs, k_sigma, history_decay, max_history_ratio;
+  float variance_floor, variance_reference, q_gradient, fixed_prior_ratio;
+  int use_fixed_weight, fill_holes, max_history_age;
+};
+
 __global__ void fuse_kernel(const float* __restrict__ depth, const std::uint8_t* __restrict__ valid,
                             const float* __restrict__ variance,
                             const float* __restrict__ prior_depth,
                             const float* __restrict__ prior_variance,
                             const std::uint16_t* __restrict__ prior_age,
                             const std::uint8_t* __restrict__ prior_present, int width, int height,
-                            DeviceConfig config, float* __restrict__ out_depth,
+                            FuseConstants constants, float* __restrict__ out_depth,
                             std::uint8_t* __restrict__ out_valid, float* __restrict__ out_variance,
                             float* __restrict__ out_confidence,
                             std::uint8_t* __restrict__ out_source,
@@ -311,6 +355,9 @@ __global__ void fuse_kernel(const float* __restrict__ depth, const std::uint8_t*
 
   const int x = blockIdx.x * blockDim.x + threadIdx.x;
   const int y = blockIdx.y * blockDim.y + threadIdx.y;
+  int decision = -1;  // index into tally, -1 outside the image
+  bool expired = false;
+  float prior_weight = 0.0f;
   if (x < width && y < height) {
     const int index = y * width + x;
     float result_depth = 0.0f;
@@ -322,62 +369,60 @@ __global__ void fuse_kernel(const float* __restrict__ depth, const std::uint8_t*
     const bool current_valid = valid[index] != 0;
     const bool prior_here = prior_present[index] != 0;
     if (current_valid) {
-      const double depth_current = depth[index];
-      const double variance_current =
-          fmax(static_cast<double>(variance[index]), config.variance_floor);
+      const float depth_current = depth[index];
+      const float variance_current = fmaxf(variance[index], constants.variance_floor);
       result_valid = 1;
       if (!prior_here) {
-        result_depth = static_cast<float>(depth_current);
-        result_variance = static_cast<float>(variance_current);
+        result_depth = depth_current;
+        result_variance = variance_current;
         result_source = 1;
-        atomicAdd(&tally[1], 1ull);
+        decision = 1;
       } else {
-        const double depth_prior = prior_depth[index];
-        const double variance_prior =
-            fmax(static_cast<double>(prior_variance[index]), config.variance_floor);
-        const double slope = local_gradient(depth, valid, width, height, x, y, index);
-        const double variance_merge =
-            fmax(static_cast<double>(prior_variance[index]) + config.q_gradient * slope * slope,
-                 config.variance_floor);
-        const double tau =
-            config.tau_abs + config.k_sigma * sqrt(variance_current + variance_prior);
-        if (fabs(depth_current - depth_prior) <= tau) {
-          const double precision_current = 1.0 / variance_current;
-          const double precision_prior = config.fixed_prior_weight > 0.0
-                                             ? precision_current * config.fixed_prior_weight /
-                                                   (1.0 - config.fixed_prior_weight)
-                                             : fmin(config.history_decay / variance_merge,
-                                                    config.max_history_ratio * precision_current);
-          const double total = precision_current + precision_prior;
-          result_depth = static_cast<float>(
-              (precision_current * depth_current + precision_prior * depth_prior) / total);
-          result_variance = static_cast<float>(fmax(1.0 / total, config.variance_floor));
+        const float depth_prior = prior_depth[index];
+        const float variance_prior = fmaxf(prior_variance[index], constants.variance_floor);
+        const float slope = local_gradient(depth, valid, width, height, x, y, index);
+        const float variance_merge = fmaxf(
+            prior_variance[index] + constants.q_gradient * slope * slope, constants.variance_floor);
+        const float tau =
+            constants.tau_abs + constants.k_sigma * sqrtf(variance_current + variance_prior);
+        if (fabsf(depth_current - depth_prior) <= tau) {
+          const float precision_current = 1.0f / variance_current;
+          const float precision_prior =
+              constants.use_fixed_weight != 0
+                  ? precision_current * constants.fixed_prior_ratio
+                  : fminf(constants.history_decay / variance_merge,
+                          constants.max_history_ratio * precision_current);
+          const float inverse_total = 1.0f / (precision_current + precision_prior);
+          const float weight = precision_prior * inverse_total;
+          // The weighted mean written as current + w * (prior - current): in float this keeps
+          // the error at an ulp of the depth, the difference being small.
+          result_depth = depth_current + weight * (depth_prior - depth_current);
+          result_variance = fmaxf(inverse_total, constants.variance_floor);
           result_source = 2;
-          atomicAdd(&tally[0], 1ull);
-          atomicAdd(&weight_sum, precision_prior / total);
+          decision = 0;
+          prior_weight = weight;
         } else {
-          result_depth = static_cast<float>(depth_current);
-          result_variance = static_cast<float>(variance_current);
+          result_depth = depth_current;
+          result_variance = variance_current;
           result_source = 1;
-          atomicAdd(&tally[depth_current < depth_prior ? 2 : 3], 1ull);
+          decision = depth_current < depth_prior ? 2 : 3;
         }
       }
-    } else if (prior_here && config.fill_holes != 0) {
+    } else if (prior_here && constants.fill_holes != 0) {
       const int next_age = static_cast<int>(prior_age[index]) + 1;
-      if (next_age <= config.max_history_age) {
+      if (next_age <= constants.max_history_age) {
         result_depth = prior_depth[index];
-        result_variance = static_cast<float>(
-            fmax(static_cast<double>(prior_variance[index]), config.variance_floor));
+        result_variance = fmaxf(prior_variance[index], constants.variance_floor);
         result_valid = 1;
         result_source = 3;
         result_age = static_cast<unsigned short>(next_age);
-        atomicAdd(&tally[4], 1ull);
+        decision = 4;
       } else {
-        atomicAdd(&tally[5], 1ull);
-        atomicAdd(&tally[6], 1ull);
+        expired = true;
+        decision = 6;
       }
     } else {
-      atomicAdd(&tally[6], 1ull);
+      decision = 6;
     }
 
     out_depth[index] = result_depth;
@@ -385,10 +430,24 @@ __global__ void fuse_kernel(const float* __restrict__ depth, const std::uint8_t*
     out_variance[index] = result_variance;
     out_source[index] = result_source;
     out_age[index] = result_age;
-    out_confidence[index] =
-        result_valid != 0 ? static_cast<float>(1.0 / (1.0 + static_cast<double>(result_variance) /
-                                                                config.variance_reference))
-                          : 0.0f;
+    // 1 / (1 + v / ref) written as ref / (ref + v): the same value with one division.
+    out_confidence[index] = result_valid != 0 ? constants.variance_reference /
+                                                    (constants.variance_reference + result_variance)
+                                              : 0.0f;
+  }
+  for (int k = 0; k < 7; ++k) {
+    if (k != 5) {
+      warp_count(decision == k, &tally[k]);
+    }
+  }
+  warp_count(expired, &tally[5]);
+  // Sum the float weights across the warp, then widen once per warp for the block total.
+  float warp_weight = prior_weight;
+  for (int offset = 16; offset > 0; offset /= 2) {
+    warp_weight += __shfl_down_sync(0xFFFFFFFFu, warp_weight, offset);
+  }
+  if (is_warp_leader() && warp_weight != 0.0f) {
+    atomicAdd(&weight_sum, static_cast<double>(warp_weight));
   }
   __syncthreads();
   if (thread == 0) {
@@ -403,6 +462,26 @@ __global__ void fuse_kernel(const float* __restrict__ depth, const std::uint8_t*
   }
 }
 
+FuseConstants make_fuse_constants(const Config& config) {
+  const FusionConfig& fusion = config.fusion;
+  FuseConstants constants{};
+  constants.tau_abs = static_cast<float>(fusion.tau_abs_m);
+  constants.k_sigma = static_cast<float>(fusion.k_sigma);
+  constants.history_decay = static_cast<float>(fusion.history_decay);
+  constants.max_history_ratio = static_cast<float>(fusion.max_history_ratio);
+  constants.variance_floor = static_cast<float>(fusion.variance_floor_m2);
+  constants.variance_reference = static_cast<float>(fusion.variance_reference_m2);
+  constants.q_gradient = static_cast<float>(fusion.q_gradient);
+  constants.use_fixed_weight = fusion.fixed_prior_weight > 0.0 ? 1 : 0;
+  constants.fixed_prior_ratio =
+      fusion.fixed_prior_weight > 0.0
+          ? static_cast<float>(fusion.fixed_prior_weight / (1.0 - fusion.fixed_prior_weight))
+          : 0.0f;
+  constants.fill_holes = fusion.fill_holes ? 1 : 0;
+  constants.max_history_age = fusion.max_history_age_frames;
+  return constants;
+}
+
 DeviceConfig make_device_config(const Config& config) {
   DeviceConfig device{};
   device.min_m = config.depth.min_m;
@@ -414,17 +493,7 @@ DeviceConfig make_device_config(const Config& config) {
       static_cast<float>(1.0 / (2.0 * config.spatial.sigma_xy_px * config.spatial.sigma_xy_px));
   device.range_scale =
       static_cast<float>(1.0 / (2.0 * config.spatial.sigma_depth_m * config.spatial.sigma_depth_m));
-  device.tau_abs = config.fusion.tau_abs_m;
-  device.k_sigma = config.fusion.k_sigma;
-  device.history_decay = config.fusion.history_decay;
-  device.max_history_ratio = config.fusion.max_history_ratio;
-  device.variance_floor = config.fusion.variance_floor_m2;
-  device.variance_reference = config.fusion.variance_reference_m2;
-  device.q_gradient = config.fusion.q_gradient;
-  device.fixed_prior_weight = config.fusion.fixed_prior_weight;
   device.process_noise = 0.0;
-  device.fill_holes = config.fusion.fill_holes ? 1 : 0;
-  device.max_history_age = config.fusion.max_history_age_frames;
   return device;
 }
 
@@ -458,8 +527,11 @@ class CudaPipeline final : public Pipeline {
     DeviceConfig device_config = make_device_config(config);
     FrameOutcome outcome;
 
+    // The caller's array is pageable; staging it in pinned memory makes the upload a single
+    // full-speed DMA instead of the driver's chunked bounce copy.
+    std::memcpy(input_staging_.data(), frame.depth_m.data, count * sizeof(float));
     start_.record(stream);
-    input_.upload(frame.depth_m.data, count, stream);
+    input_.upload(reinterpret_cast<const float*>(input_staging_.data()), count, stream);
     uploaded_.record(stream);
     counters_.fill_bytes(0, 1, stream);
     sanitize_kernel<<<grid, block, 0, stream>>>(input_.data(), width, height, device_config,
@@ -517,41 +589,60 @@ class CudaPipeline final : public Pipeline {
 
     fuse_kernel<<<grid, block, 0, stream>>>(
         measurement, valid_.data(), variance_.data(), prior_depth_.data(), prior_variance_.data(),
-        prior_age_.data(), prior_present_.data(), width, height, device_config, out_depth_.data(),
-        out_valid_.data(), out_variance_.data(), out_confidence_.data(), out_source_.data(),
-        out_age_.data(), counters_.data());
+        prior_age_.data(), prior_present_.data(), width, height, make_fuse_constants(config),
+        out_depth_.data(), out_valid_.data(), out_variance_.data(), out_confidence_.data(),
+        out_source_.data(), out_age_.data(), counters_.data());
     CUDEPTHFUSION_CUDA_CHECK(cudaGetLastError());
     fused_.record(stream);
 
+    // Keeping the result as history costs nothing on the device: once the downloads below are
+    // queued, the output and history buffers trade places (ping-pong). The stream orders the
+    // downloads before the next frame's kernels overwrite what is then the output buffer.
+    history_event_.record(stream);
+
+    // Every output lands in one pinned block, and each is copied into its owned result vector
+    // as soon as its own transfer has finished, so the host copies overlap the remaining DMA.
+    const StagingLayout layout = staging_layout(count);
+    unsigned char* staging = staging_.data();
+    out_depth_.download(reinterpret_cast<float*>(staging + layout.depth), count, stream);
+    output_ready_[0].record(stream);
+    out_variance_.download(reinterpret_cast<float*>(staging + layout.variance), count, stream);
+    output_ready_[1].record(stream);
+    out_confidence_.download(reinterpret_cast<float*>(staging + layout.confidence), count, stream);
+    output_ready_[2].record(stream);
+    out_age_.download(reinterpret_cast<std::uint16_t*>(staging + layout.age), count, stream);
+    output_ready_[3].record(stream);
+    out_valid_.download(staging + layout.valid, count, stream);
+    output_ready_[4].record(stream);
+    out_source_.download(staging + layout.source, count, stream);
+    counters_.download(reinterpret_cast<DeviceCounters*>(staging + layout.counters), 1, stream);
+    downloaded_.record(stream);
     if (request.keep_history) {
-      history_depth_.copy_from(out_depth_, count, stream);
-      history_variance_.copy_from(out_variance_, count, stream);
-      history_valid_.copy_from(out_valid_, count, stream);
-      history_age_.copy_from(out_age_, count, stream);
+      std::swap(history_depth_, out_depth_);
+      std::swap(history_variance_, out_variance_);
+      std::swap(history_valid_, out_valid_);
+      std::swap(history_age_, out_age_);
       history_intrinsics_ = frame.intrinsics;
       history_pose_ = request.pose;
       has_history_ = true;
     } else {
       has_history_ = false;
     }
-    history_event_.record(stream);
 
-    result.depth_m.resize(count);
-    result.valid_mask.resize(count);
-    result.variance_m2.resize(count);
-    result.confidence_score.resize(count);
-    result.source_mask.resize(count);
-    result.history_age.resize(count);
-    out_depth_.download(result.depth_m.data(), count, stream);
-    out_valid_.download(result.valid_mask.data(), count, stream);
-    out_variance_.download(result.variance_m2.data(), count, stream);
-    out_confidence_.download(result.confidence_score.data(), count, stream);
-    out_source_.download(result.source_mask.data(), count, stream);
-    out_age_.download(result.history_age.data(), count, stream);
-    DeviceCounters host{};
-    counters_.download(&host, 1, stream);
-    downloaded_.record(stream);
+    output_ready_[0].synchronize();
+    copy_out(staging + layout.depth, count, result.depth_m);
+    output_ready_[1].synchronize();
+    copy_out(staging + layout.variance, count, result.variance_m2);
+    output_ready_[2].synchronize();
+    copy_out(staging + layout.confidence, count, result.confidence_score);
+    output_ready_[3].synchronize();
+    copy_out(staging + layout.age, count, result.history_age);
+    output_ready_[4].synchronize();
+    copy_out(staging + layout.valid, count, result.valid_mask);
     stream_.synchronize();
+    copy_out(staging + layout.source, count, result.source_mask);
+    DeviceCounters host{};
+    std::memcpy(&host, staging + layout.counters, sizeof(DeviceCounters));
 
     outcome.device.measured = true;
     outcome.device.upload_ms = uploaded_.since(start_);
@@ -588,6 +679,41 @@ class CudaPipeline final : public Pipeline {
   }
 
  private:
+  struct StagingLayout {
+    std::size_t depth, variance, confidence, age, valid, source, counters, total;
+  };
+
+  // Byte offsets of each output inside the pinned block, every one 256-byte aligned.
+  static StagingLayout staging_layout(std::size_t count) {
+    const auto align = [](std::size_t bytes) {
+      return (bytes + 255u) & ~static_cast<std::size_t>(255u);
+    };
+    StagingLayout layout{};
+    std::size_t offset = 0;
+    const auto take = [&](std::size_t bytes) {
+      const std::size_t start = offset;
+      offset += align(bytes);
+      return start;
+    };
+    layout.depth = take(count * sizeof(float));
+    layout.variance = take(count * sizeof(float));
+    layout.confidence = take(count * sizeof(float));
+    layout.age = take(count * sizeof(std::uint16_t));
+    layout.valid = take(count);
+    layout.source = take(count);
+    layout.counters = take(sizeof(DeviceCounters));
+    layout.total = offset;
+    return layout;
+  }
+
+  // assign() copies straight from the staging block; resize() + memcpy would first zero-fill the
+  // vector, one more pass over every output.
+  template <typename T>
+  static void copy_out(const unsigned char* source, std::size_t count, std::vector<T>& target) {
+    const auto* first = reinterpret_cast<const T*>(source);
+    target.assign(first, first + count);
+  }
+
   void ensure_capacity(int width, int height) {
     if (width == width_ && height == height_) {
       return;
@@ -614,6 +740,8 @@ class CudaPipeline final : public Pipeline {
     history_valid_.resize(count);
     history_age_.resize(count);
     counters_.resize(1);
+    staging_.reserve(staging_layout(count).total);
+    input_staging_.reserve(count * sizeof(float));
     width_ = width;
     height_ = height;
     has_history_ = false;  // buffers just changed shape
@@ -622,6 +750,7 @@ class CudaPipeline final : public Pipeline {
   Stream stream_;
   Event start_, uploaded_, sanitized_, filtered_event_, variance_event_, reprojected_, fused_,
       history_event_, downloaded_;
+  Event output_ready_[5];
   DeviceBuffer<float> input_, depth_, filtered_, variance_;
   DeviceBuffer<std::uint8_t> valid_;
   DeviceBuffer<unsigned long long> winner_;
@@ -635,6 +764,8 @@ class CudaPipeline final : public Pipeline {
   DeviceBuffer<std::uint8_t> history_valid_;
   DeviceBuffer<std::uint16_t> history_age_;
   DeviceBuffer<DeviceCounters> counters_;
+  cuda::PinnedBuffer staging_;
+  cuda::PinnedBuffer input_staging_;
   Intrinsics history_intrinsics_{};
   RigidTransform history_pose_ = RigidTransform::identity();
   int width_ = 0;

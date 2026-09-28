@@ -133,23 +133,30 @@ history or expired, plus the mean prior weight.
 
 ## The CUDA backend (P4)
 
-The GPU path runs the same stages in the same order, one thread per pixel, five kernels
+The GPU path runs the same stages in the same order, one thread per pixel, six kernels
 sequenced in a single stream: sanitize → bilateral → variance → project → gather → fuse.
-`DepthFusion::process()` stays synchronous: it uploads the frame, enqueues the kernels,
-copies the history forward on the device, downloads the six output arrays and the counters,
-and then synchronises once.
+`DepthFusion::process()` stays synchronous: it stages the frame in pinned memory and uploads
+it, enqueues the kernels, downloads the six output arrays and the counters into one pinned
+block, and copies each array into its owned result as soon as its own transfer has finished.
+The output buffers then become the history by swapping places with it; nothing is copied on
+the device. Every stage is timed with CUDA events and reported in `Diagnostics.device`.
 
 - **The z-buffer is a 64-bit `atomicMin`** on the same key the CPU builds, so "nearest wins,
   ties fall to the lowest source index" needs no lock and no second pass.
 - **Buffers only ever grow.** They are allocated on the first frame and on a resolution
   change; the steady frame loop performs no allocation. Verified by watching free device
   memory over 200 frames with resets and resize cycles: it does not move.
-- **Precision is split on purpose.** Input classification, the noise model, the gate and the
-  merge weights run in double on *both* backends, so a decision never depends on the backend.
-  The bilateral filter runs in float (spec 7.2). Every CUDA call is checked and reported as
+- **Precision is split on purpose.** Input classification, the noise model and the variance
+  transport run in double on both backends; they are cheap. The bilateral filter, the gate
+  and the merge run in float on the GPU (spec 7.2) and in double on the CPU reference. Until
+  P7 the gate and merge were double on the GPU too, which put the fuse kernel on the FP64
+  pipe (1/64 of the FP32 rate on consumer GPUs) and made it 85 % of the kernel time. Moving
+  it to float cut it from 271 to 15 µs, and re-measured parity and quality did not move
+  (see [PERFORMANCE.md](PERFORMANCE.md)). Every CUDA call is checked and reported as
   `CudaError`.
-- Not used yet, on purpose: shared-memory tiles for the filter, CUDA Graphs, async APIs,
-  FP16, fast-math and approximate `exp`. Those belong to P7, after correctness.
+- Measured and rejected in P7: a shared-memory tile for the filter (bit-identical output, no
+  speed-up: the kernel is bound by its 25 `expf` per pixel, not by memory). Not used: CUDA
+  Graphs, async APIs, FP16, fast-math and approximate `exp`.
 
 ### What parity means in practice
 

@@ -15,6 +15,7 @@ from cudepthfusion.eval.artifacts import LATENCY_NAME, SUMMARY_NAME
 from cudepthfusion.eval.benchmark import (
     BenchmarkError,
     BenchmarkPlan,
+    _other_processes,
     load_frames,
     run_benchmark,
 )
@@ -142,3 +143,10 @@ def test_cuda_results_carry_device_timings_that_add_up() -> None:
     assert timings.upload_ms + timings.compute_ms + timings.download_ms <= (
         result.diagnostics.host_process_ms
     )
+
+
+def test_the_benchmark_does_not_count_itself_as_gpu_contention() -> None:
+    listing = "4242, 300\n777, 9430\n"
+    assert _other_processes(listing, own_pid=4242) == 1
+    assert _other_processes("4242, 300\n", own_pid=4242) == 0
+    assert _other_processes("", own_pid=4242) == 0
