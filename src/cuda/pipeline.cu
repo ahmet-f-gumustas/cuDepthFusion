@@ -49,7 +49,7 @@ struct DeviceConfig {
   int radius;
   float spatial_scale, range_scale;
   double tau_abs, k_sigma, history_decay, max_history_ratio;
-  double variance_floor, variance_reference, q_gradient, process_noise;
+  double variance_floor, variance_reference, q_gradient, process_noise, fixed_prior_weight;
   int fill_holes, max_history_age;
 };
 
@@ -342,8 +342,11 @@ __global__ void fuse_kernel(const float* __restrict__ depth, const std::uint8_t*
             config.tau_abs + config.k_sigma * sqrt(variance_current + variance_prior);
         if (fabs(depth_current - depth_prior) <= tau) {
           const double precision_current = 1.0 / variance_current;
-          const double precision_prior = fmin(config.history_decay / variance_merge,
-                                              config.max_history_ratio * precision_current);
+          const double precision_prior = config.fixed_prior_weight > 0.0
+                                             ? precision_current * config.fixed_prior_weight /
+                                                   (1.0 - config.fixed_prior_weight)
+                                             : fmin(config.history_decay / variance_merge,
+                                                    config.max_history_ratio * precision_current);
           const double total = precision_current + precision_prior;
           result_depth = static_cast<float>(
               (precision_current * depth_current + precision_prior * depth_prior) / total);
@@ -417,6 +420,7 @@ DeviceConfig make_device_config(const Config& config) {
   device.variance_floor = config.fusion.variance_floor_m2;
   device.variance_reference = config.fusion.variance_reference_m2;
   device.q_gradient = config.fusion.q_gradient;
+  device.fixed_prior_weight = config.fusion.fixed_prior_weight;
   device.process_noise = 0.0;
   device.fill_holes = config.fusion.fill_holes ? 1 : 0;
   device.max_history_age = config.fusion.max_history_age_frames;
