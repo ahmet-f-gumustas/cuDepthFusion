@@ -4,6 +4,45 @@ Versions follow the roadmap in the development spec: 0.0.x releases are phase
 snapshots before the first functional release, and 0.1.0 is the first release with
 CPU/CUDA fusion evaluated on ICL-NUIM.
 
+## [0.1.1] - 2026-10-29
+
+Release preparation (P8), which completes the v0.1 roadmap. No change to the algorithm: every
+validation and test metric is identical to 0.1.0.
+
+### Added
+
+- **One-command reproduction.** `scripts/reproduce.py` downloads and validates any missing
+  ICL-NUIM sequence, then regenerates the evaluation, ablation, demo and benchmark runs, and
+  records every command with its exit code and duration in `reproduce.json`.
+- **Clean-install check.** `scripts/check_clean_install.sh` installs the committed tree into a
+  fresh virtual environment, not editable, and runs the smoke test, pytest and the C++ tests:
+  the spec's "a new user installs and runs the tests". `--cuda ARCHS` builds the CUDA variant.
+- **Pinned environment.** `constraints.txt` holds the verified versions, build dependencies
+  included.
+- **CI.** Lint, clean installs on Ubuntu 22.04 / Python 3.10 / GCC 11 and Ubuntu 24.04 /
+  Python 3.12 / GCC 13, the C++ tests under ASan/UBSan, and a CUDA 12.8 build for sm_87 and
+  sm_89. Hosted runners have no GPU; the GPU tests report SKIPPED there.
+- `CITATION.cff` and `CONTRIBUTING.md`. The README now gives the scope, the measured results
+  and the spec's targets in separate tables, the platform matrix and the limitations.
+
+### Fixed
+
+- A CUDA build on a machine without a usable CUDA device (no GPU, or a driver older than the
+  runtime) raised `CudaError` when an engine was created with `backend="cuda"`, instead of
+  the documented `BackendUnavailableError`.
+
+### Measured
+
+- First benchmark on an idle GPU (RTX 4090 Laptop, 640×480): process latency 0.735 ms
+  median, 0.787 ms p95. The 0.1.0 numbers (0.938 / 2.394 ms) were taken while another job
+  shared the GPU.
+
+### Known limitations
+
+Unchanged from 0.1.0. The spec's RMSE targets are not met; whether to add outlier rejection
+is open. Only the RTX 4090 Laptop is measured. Results are on ICL-NUIM with oracle poses
+only, and the pose-perturbation experiment (spec 10.4) has not been run.
+
 ## [0.1.0] - 2026-09-28
 
 The first functional release: pose-aware temporal depth fusion on the CPU and on CUDA,
@@ -88,4 +127,6 @@ measurement. Spatial filtering and temporal fusion arrive in P3 (CPU) and P4
   and CUDA builds, and a clean-venv install with the smoke test.
 - RTX 4070 Laptop and Jetson Orin Nano Super: not yet verified.
 
+[0.1.1]: https://github.com/ahmet-f-gumustas/cuDepthFusion/releases/tag/v0.1.1
+[0.1.0]: https://github.com/ahmet-f-gumustas/cuDepthFusion/releases/tag/v0.1.0
 [0.0.1]: https://github.com/ahmet-f-gumustas/cuDepthFusion/releases/tag/v0.0.1
