@@ -2,15 +2,28 @@ from __future__ import annotations
 
 import json
 from importlib.metadata import version
+from pathlib import Path
 
 import pytest
+import yaml
 
 import cudepthfusion as cdf
 from cudepthfusion import cli
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def test_version_matches_distribution_metadata() -> None:
     assert cdf.__version__ == version("cudepthfusion")
+
+
+def test_release_metadata_agree_with_the_package_version() -> None:
+    citation = yaml.safe_load((REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8"))
+    assert citation["cff-version"] == "1.2.0"
+    assert citation["version"] == cdf.__version__
+    assert citation["license"] == "Apache-2.0"
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert f"## [{cdf.__version__}]" in changelog
 
 
 def test_public_api_is_exported() -> None:
