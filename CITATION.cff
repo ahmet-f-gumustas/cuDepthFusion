@@ -15,8 +15,8 @@ authors:
     alias: ahmet-f-gumustas
 repository-code: "https://github.com/ahmet-f-gumustas/cuDepthFusion"
 license: Apache-2.0
-version: 0.1.0
-date-released: "2026-09-28"
+version: 0.1.1
+date-released: "2026-10-29"
 keywords:
   - depth fusion
   - temporal filtering
