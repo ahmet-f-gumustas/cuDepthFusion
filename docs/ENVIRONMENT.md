@@ -24,7 +24,7 @@ all three devices. Pass the value explicitly to build for one device only.
 |---|---|
 | OS | Ubuntu 22.04.5 LTS, kernel 6.8.0-138-generic |
 | GPU | NVIDIA GeForce RTX 4090 Laptop GPU, 16 GB, CC 8.9, 76 SMs |
-| NVIDIA driver | 580.178.04 (reports CUDA driver API 13.0) |
+| NVIDIA driver | 580.178.04 for P0–P7, 580.196.07 for P8 (both report CUDA driver API 13.0) |
 | CUDA toolkit | 12.8.93 (`/usr/local/cuda-12.8`) |
 | Host compiler | GCC 11.4.0 |
 | CMake / Ninja | 3.22.1 / 1.10.1 |
@@ -64,8 +64,9 @@ RTX 4090 Laptop.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push and pull request. Hosted runners have no GPU,
-so GPU tests report SKIPPED there, and each job's summary says so.
+`.github/workflows/ci.yml` runs on every push to `main` and on every pull request. Hosted
+runners have no GPU, so GPU tests report SKIPPED there, and each clean-install job says so in
+its summary.
 
 | Job | Platform | What it checks |
 |---|---|---|

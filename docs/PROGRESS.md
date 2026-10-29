@@ -597,3 +597,85 @@ at, and show before and after for both latency and quality.
 - The download (0.39 ms) is now the largest single cost and is at the link's limit. Only
   fewer bytes or a device-side consumer would reduce it.
 - Outlier rejection, which would move RMSE (P5), is still a decision for the spec's owner.
+
+## P8 — Release preparation (2026-10-29)
+
+**Gate:** "a new user installs and runs the tests". **PASSED**: from the committed tree into a
+fresh virtual environment, CPU-only and with CUDA on the RTX 4090 Laptop, and on every push in
+CI (two CPU toolchains and a CUDA build without a device).
+
+### Delivered
+
+- `scripts/check_clean_install.sh`: unpacks `git archive HEAD` into a temporary directory,
+  installs `.[dev]` (not editable) into a new virtual environment with the pinned versions, and
+  runs the smoke test, pytest and the C++ tests there. `--cuda ARCHS` builds the CUDA variant.
+  It says whether the GPU tests ran, also in the GitHub job summary.
+- `constraints.txt`: the verified versions, build dependencies and pip included.
+  `pyproject.toml` keeps open ranges.
+- `.github/workflows/ci.yml`: lint (ruff, clang-format); clean install on Ubuntu 22.04 /
+  Python 3.10 / GCC 11 and Ubuntu 24.04 / Python 3.12 / GCC 13; the C++ tests under
+  ASan/UBSan, halting on the first report; a CUDA 12.8 build for sm_87 and sm_89.
+- `scripts/reproduce.py`: one command for every published result, the demo and the benchmark
+  (spec 14, "demo and result files from one command"). It downloads and validates any missing
+  sequence, then runs the documented commands in the order of `RESULTS.md` and records each
+  command, exit code and duration in `reproduce.json`.
+- `CITATION.cff` (validated with cffconvert) and `CONTRIBUTING.md`. A test keeps the citation
+  and the changelog in step with the package version.
+- README for release: scope, the results with clean ground truth and oracle poses stated, the
+  measured numbers and the spec's targets in separate tables, the platform matrix,
+  reproduction, limitations and how to cite.
+
+### Verification run on RTX 4090 Laptop
+
+- `scripts/check_clean_install.sh` passed CPU-only and with `--cuda 89`. In the CUDA variant
+  the GPU tests ran on the RTX 4090 Laptop.
+- `scripts/reproduce.py --backend cuda`, with the four sequences already on disk: all 9 steps
+  passed in 8.4 minutes. Validation and test metrics are identical to the P7 reference runs
+  (largest difference 0). Against the P5 runs from before P7's FP32 fuse, the largest
+  difference is 2.3e-7 m (an edge MAE in the ablation).
+- The benchmark in that run was the first on an idle GPU: 0.735 ms median, 0.787 ms p95 and
+  0.889 ms p99 process latency, against 0.938 / 2.394 / 2.916 ms on the shared GPU in P7. See
+  [PERFORMANCE.md](PERFORMANCE.md).
+- CI: all five jobs pass. In the CUDA job, 222 pytest tests pass and the 8 GPU tests are
+  SKIPPED ("no CUDA device"); ctest passes 82/82, with the 7 GPU tests skipped.
+
+### Found and fixed along the way
+
+- **A CUDA build on a machine without a usable device raised `CudaError`, not
+  `BackendUnavailableError`.** The device check sat in the CUDA pipeline's constructor body,
+  but its members (stream, events) call the runtime while they are constructed, which is
+  earlier. The new CI CUDA job found it: hosted runners have the toolkit but no driver. The
+  check now runs before the pipeline is constructed. A regression test hides every device with
+  `CUDA_VISIBLE_DEVICES`, so GPU machines take that path too. With the device hidden, the
+  whole suite passes locally with the same counts as in CI.
+- `ruff format` 0.16 also formats Python code blocks inside Markdown and would undo the
+  aligned comments in the README. CI formats only the Python directories.
+
+### Final delivery checklist (spec 14)
+
+| Item | Status | Evidence |
+|---|---|---|
+| CPU-only clean install and first demo | done | `check_clean_install.sh`; demo tests and the reproduction test run on CPU |
+| ICL clean/noisy/pose pairing and conventions validated | done | P1, `DATA_VALIDATION.md`; kt0–kt3 re-validated by the reproduction |
+| The filter never reads clean depth | done | P1/P5: clean depth is reachable only through `IclGroundTruth` |
+| Pose direction, signed fy, Z/range conversions tested | done | P1, P2 |
+| Race-free winner/depth/variance selection on CUDA | done | P4: 64-bit z-buffer, racecheck clean |
+| CPU/GPU parity and sanitizer evidence | done | P4, re-checked in P7 |
+| No loss of current-valid pixels; history-only marked separately | done | coverage 100 %; `source_mask` |
+| Fixed split and baseline comparisons | done | P5 |
+| Edge, coverage and ghosting reported next to RMSE | done, ghosting on synthetic scenes only | `RESULTS.md`; ICL has no moving objects |
+| Kernel / process / demo times kept apart | done | P6, P7 |
+| Demo and result files from one command | done | `scripts/reproduce.py` |
+| Measured and target results separate in the README | done | README "Results" and "Against the spec's targets" |
+| Code and data licenses and attribution documented separately | done | `LICENSE`, `DATASETS.md`, `CITATION.cff` |
+
+### Open items and decisions to carry forward
+
+- **Outlier rejection** is the one change that would move RMSE, and it is still a decision for
+  the spec's owner.
+- **RTX 4070 Laptop and Jetson Orin Nano Super** are unmeasured; CI cannot run GPU code.
+- **Pose perturbation (spec 10.4)** has not been run. The ICL results are oracle-pose results,
+  as `RESULTS.md` and the README say, but `summary.json` does not carry an `oracle_pose` field
+  yet.
+- **v0.2 and v0.3** as planned: TUM RGB-D and a live adapter, then ROS 2 and an asynchronous
+  device API.
