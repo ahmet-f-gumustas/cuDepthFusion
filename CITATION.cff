@@ -1,0 +1,41 @@
+cff-version: 1.2.0
+message: >-
+  If you use cuDepthFusion in your work, please cite the software with the metadata below.
+  Results on ICL-NUIM should also cite the dataset (see references).
+type: software
+title: "cuDepthFusion: pose-aware, edge-preserving temporal depth fusion"
+abstract: >-
+  Open-source temporal depth fusion that combines consecutive noisy depth frames with their
+  camera poses to produce a more stable depth image in the current view, without dragging old
+  surfaces across occlusions or moving foregrounds. A C++ reference implementation defines
+  correctness, a CUDA backend makes it fast, and Python drives datasets, evaluation and demos.
+authors:
+  - given-names: Ahmet Faruk
+    family-names: Gümüştaş
+    alias: ahmet-f-gumustas
+repository-code: "https://github.com/ahmet-f-gumustas/cuDepthFusion"
+license: Apache-2.0
+version: 0.1.0
+date-released: "2026-09-28"
+keywords:
+  - depth fusion
+  - temporal filtering
+  - depth denoising
+  - RGB-D
+  - CUDA
+  - robotics
+references:
+  - type: conference-paper
+    title: "A Benchmark for RGB-D Visual Odometry, 3D Reconstruction and SLAM"
+    authors:
+      - given-names: Ankur
+        family-names: Handa
+      - given-names: Thomas
+        family-names: Whelan
+      - given-names: John B.
+        family-names: McDonald
+      - given-names: Andrew J.
+        family-names: Davison
+    collection-title: "IEEE International Conference on Robotics and Automation (ICRA)"
+    year: 2014
+    url: "https://www.doc.ic.ac.uk/~ahanda/VaFRIC/iclnuim.html"

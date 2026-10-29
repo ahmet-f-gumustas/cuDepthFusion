@@ -497,18 +497,21 @@ DeviceConfig make_device_config(const Config& config) {
   return device;
 }
 
+// Runs before a CudaPipeline exists: its members (stream, events) call the runtime while they
+// are constructed, before any constructor body could check, so without a usable device they
+// would raise CudaError instead of BackendUnavailableError.
+void require_usable_device() {
+  const cuda::DeviceQuery query = cuda::query_devices();
+  if (query.devices.empty()) {
+    throw BackendUnavailableError(
+        "backend 'cuda' requested, but no usable CUDA device was found: " + query.error);
+  }
+  // Create the context now, so a broken installation fails here and not mid-sequence.
+  CUDEPTHFUSION_CUDA_CHECK(cudaFree(nullptr));
+}
+
 class CudaPipeline final : public Pipeline {
  public:
-  CudaPipeline() {
-    const cuda::DeviceQuery query = cuda::query_devices();
-    if (query.devices.empty()) {
-      throw BackendUnavailableError(
-          "backend 'cuda' requested, but no usable CUDA device was found: " + query.error);
-    }
-    // Create the context now, so a broken installation fails here and not mid-sequence.
-    CUDEPTHFUSION_CUDA_CHECK(cudaFree(nullptr));
-  }
-
   void reset() override { has_history_ = false; }
   bool has_history() const override { return has_history_; }
 
@@ -775,6 +778,9 @@ class CudaPipeline final : public Pipeline {
 
 }  // namespace
 
-std::unique_ptr<Pipeline> make_cuda_pipeline() { return std::make_unique<CudaPipeline>(); }
+std::unique_ptr<Pipeline> make_cuda_pipeline() {
+  require_usable_device();
+  return std::make_unique<CudaPipeline>();
+}
 
 }  // namespace cudepthfusion::detail

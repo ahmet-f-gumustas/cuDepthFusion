@@ -16,10 +16,19 @@ python -m cudepthfusion.cli evaluate --split test --data-root data/icl \
     --config configs/icl.yaml --output runs/test --backend cuda --stability --plots
 ```
 
+`python scripts/reproduce.py --backend cuda` runs these three, the demo and the benchmark in
+one go, downloading and validating any missing sequence first. Its 2026-10-29 run gave every
+metric of the validation and test tables below unchanged.
+
 Hardware: RTX 4090 Laptop, CUDA backend. Splits follow the spec: kt0 development, kt1
 validation (parameter selection), kt2 and kt3 test. Metrics are computed on the fixed mask
 `clean-valid AND raw-input-valid`, so nothing improves by dropping pixels; coverage says what
 each method failed to produce inside that mask.
+
+**Oracle poses.** The filter receives the dataset's ground-truth camera poses, and the
+evaluator compares against the clean depth, which the filter never sees. Every ICL number on
+this page is therefore an `oracle_pose` result: poses from visual odometry or SLAM would be
+noisier, and the controlled pose-perturbation experiment of spec 10.4 has not been run.
 
 ## Methods compared
 
@@ -150,8 +159,9 @@ a valid current measurement always wins. It should be chosen deliberately, not s
 ## Latency
 
 Measured with the benchmark protocol in P7, see [PERFORMANCE.md](PERFORMANCE.md): at 640×480
-on the RTX 4090 Laptop, CUDA process latency is 0.94 ms median and 2.4 ms p95 (the GPU was
-shared with another job during the runs). P7 did not change a single quality number above:
-re-running the validation and test splits after the optimisations gave the same p90,
-bad-pixel rate and edge MAE, and an RMSE within 1e-11 m. The RTX 4070 Laptop target and the
+on the RTX 4090 Laptop, CUDA process latency is 0.94 ms median and 2.4 ms p95 while the GPU
+was shared with another job, and 0.73 ms median and 0.79 ms p95 on an idle GPU (rerun in P8).
+P7 did not change a single quality number above: re-running the validation and test splits
+after the optimisations gave the same p90, bad-pixel rate and edge MAE, and an RMSE within
+1e-11 m. The RTX 4070 Laptop target and the
 Jetson Orin Nano Super remain untested.

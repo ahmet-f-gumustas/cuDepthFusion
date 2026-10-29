@@ -178,6 +178,27 @@ kernels themselves are 0.063 ms and the rest is waiting for the other job. Faste
 longer move the total. Transferring fewer bytes, or keeping results on the device for a
 consumer that is also on the device, would.
 
+## Idle-GPU rerun (2026-10-29)
+
+`scripts/reproduce.py` ran the same benchmark command (100 warm-up and 5 × 500 measured frames
+of kt0, 640×480) on the same laptop with nothing else on the GPU: the benchmark found no other
+compute process before or after any repeat. The code is that of "After" (the release commit
+`063ca53`), the driver 580.196.07. Run folder: `runs/reproduce/performance`.
+
+| | Shared GPU ("After" above) | Idle GPU |
+|---|---|---|
+| process latency, median | 0.938 ms | **0.735 ms** |
+| process latency, p95 | 2.394 ms | **0.787 ms** |
+| process latency, p99 | 2.916 ms | **0.889 ms** |
+| upload (H2D), median | 0.104 ms | 0.102 ms |
+| GPU compute, median | 0.165 ms | 0.080 ms |
+| download (D2H), median | 0.393 ms | 0.393 ms |
+
+The five repeat medians lie between 0.729 and 0.746 ms. Without the other job the compute
+interval falls to 0.080 ms, close to the 63 µs the kernels take in Nsight Systems, and the tail
+collapses: p95 is 7 % above the median instead of 2.5 times it. The download is unchanged at
+the link's limit and is now more than half of the frame.
+
 ## Not measured yet
 
 - **RTX 4070 Laptop**, which the 16.7 ms target refers to. Run the command above there.
@@ -185,4 +206,3 @@ consumer that is also on the device, would.
   completely: pinned staging may not pay off, and zero-copy access could replace the
   transfers. Build with `CMAKE_CUDA_ARCHITECTURES=87`, record `nvpmodel -q` (the benchmark
   does this automatically), and compare.
-- **An idle GPU on this laptop.** The runs above are fair to each other, not free of load.

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import threading
 
 import numpy as np
@@ -155,6 +158,29 @@ def test_cuda_backend_never_falls_back_to_cpu() -> None:
         return
     # With a device it runs on the GPU; it never quietly becomes the CPU backend.
     assert cdf.DepthFusion(backend="cuda").backend == "cuda"
+
+
+NO_DEVICE_PROBE = """
+import cudepthfusion as cdf
+try:
+    cdf.DepthFusion(backend="cuda")
+except cdf.BackendUnavailableError as error:
+    print("unavailable:", error)
+"""
+
+
+def test_cuda_backend_without_a_visible_device_is_unavailable() -> None:
+    # Hiding every device from the CUDA runtime lets a GPU machine take the no-device path too.
+    # It once raised CudaError from creating a stream before the device check could run.
+    result = subprocess.run(
+        [sys.executable, "-c", NO_DEVICE_PROBE],
+        env={**os.environ, "CUDA_VISIBLE_DEVICES": ""},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("unavailable: backend 'cuda'")
 
 
 def test_unknown_backend_is_rejected() -> None:
