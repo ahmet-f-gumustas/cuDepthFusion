@@ -1,0 +1,83 @@
+# Everything that needs no download and no GPU. Hosted runners have no CUDA device, so the
+# GPU tests report SKIPPED here, never PASSED, and each clean-install job says so in its
+# summary. GPU results come from the machines listed in docs/ENVIRONMENT.md.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -c constraints.txt ruff clang-format
+      - run: ruff check .
+      - run: ruff format --check python tests scripts examples
+      - run: git ls-files '*.cpp' '*.hpp' '*.cu' | xargs clang-format --dry-run -Werror
+
+  clean-install:
+    name: clean install (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04 # GCC 11, CMake 3.22: the oldest supported toolchain
+            python: "3.10"
+          - os: ubuntu-24.04 # GCC 13
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build libgtest-dev
+      - run: scripts/check_clean_install.sh --python python
+
+  sanitizers:
+    name: sanitizers (ASan + UBSan)
+    runs-on: ubuntu-22.04
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build libgtest-dev
+      - run: >-
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          -DCUDEPTHFUSION_SANITIZE=ON -DCUDEPTHFUSION_WARNINGS_AS_ERRORS=ON
+      - run: cmake --build build
+      - run: ctest --test-dir build --output-on-failure
+
+  cuda:
+    name: CUDA 12.8 build (sm_87 + sm_89, no device)
+    runs-on: ubuntu-22.04
+    env:
+      CUDACXX: /usr/local/cuda-12.8/bin/nvcc
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - name: Install nvcc and the CUDA runtime from NVIDIA's apt repository
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cuda-nvcc-12-8 cuda-cudart-dev-12-8 ninja-build libgtest-dev
+      - run: scripts/check_clean_install.sh --cuda "87;89" --python python

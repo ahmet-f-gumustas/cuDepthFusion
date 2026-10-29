@@ -62,6 +62,19 @@ CUDACXX=/usr/local/cuda-12.8/bin/nvcc scripts/check_clean_install.sh --cuda 89
 On this machine both variants passed on 2026-10-29; in the CUDA one the GPU tests ran on the
 RTX 4090 Laptop.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request. Hosted runners have no GPU,
+so GPU tests report SKIPPED there, and each job's summary says so.
+
+| Job | Platform | What it checks |
+|---|---|---|
+| lint | Ubuntu 24.04 | `ruff check`, `ruff format --check`, `clang-format` |
+| clean install | Ubuntu 22.04, Python 3.10, GCC 11 | `check_clean_install.sh`, CPU-only |
+| clean install | Ubuntu 24.04, Python 3.12, GCC 13 | `check_clean_install.sh`, CPU-only |
+| sanitizers | Ubuntu 22.04, GCC 11 | C++ tests under AddressSanitizer and UBSan |
+| CUDA build | Ubuntu 22.04, CUDA 12.8 | `check_clean_install.sh --cuda "87;89"`: the Jetson and Ada targets compile, GPU tests SKIPPED |
+
 ## Capturing an environment
 
 ```bash
